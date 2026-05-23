@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define VERSION "0.1.0 (2026/05/23)"
+#define VERSION "0.1.1 (2026/05/23)"
 
 // デフォルトハイスコア
 #define DEFAULT_HI_SCORE (76500)

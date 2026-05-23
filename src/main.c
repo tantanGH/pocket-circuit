@@ -17,7 +17,7 @@
 #include "crtc.h"
 
 // 自機カメラ
-static PLAYER_CAMERA car = { (PHYS_W / 2) << 4, (PHYS_H / 2) << 4, 0, 0, 0 };
+static PLAYER_CAMERA car = { 0 };
 
 // 8x8 normal font data
 static struct iocs_fntbuf font_data_8x8[ 256 ];
@@ -51,9 +51,16 @@ static void reset_timer_a() {
 //
 static void __attribute__((interrupt)) refresh_screen() {
 
-  // 自車の表示(スプライト0-4)
-int16_t sp_base_x = car.sp_x - 16;
-  int16_t sp_base_y = car.sp_y - 16;
+  // グラフィック座標（car.sp_x）を、スプライト座標（+16）へ変換し、
+  // さらに32x32スプライトの左上基準（-16）を引く
+  // ※ つまり、16 + car.sp_x - 16 となり、完全に相殺されて sp_base_x = car.sp_x になります！
+  int16_t sp_base_x = car.sp_x; 
+  int16_t sp_base_y = car.sp_y;
+  
+  // 例：車が一番左端（car.sp_x == 16）にいるとき、sp_base_x は 0 になります。
+  // スプライトレジスタに「0」を書き込むと、X68000の画面上の「16ドット目」から
+  // スプライトが描画されるため、グラフィック画面の左端と1ミリの狂いもなくピッタリ一致します！
+
   uint16_t pattern_base = 0x100 + car.angle * 4;
 
   // 自車の表示 (スプライト0-4) ★car.sp_x/y をベースに田の字配置
@@ -77,11 +84,19 @@ int16_t sp_base_x = car.sp_x - 16;
   SP_SCRL[ 14 ] = pattern_base + 3;
   SP_SCRL[ 15 ] = 3;
 
-  // 背景グラフィック画面のスクロール ★car.cam_x/y を使う
-  int16_t gvram_x = ((int32_t)car.cam_x * 1024) / 1440;
 
-  GR0_SCRL[0] = gvram_x & 1023;
-  GR0_SCRL[1] = car.cam_y & 1023;
+  // 1. 物理的な「画面左上端」を求める（中心cam_x - 画面物理幅の半分181）
+  int16_t screen_left = car.cam_x - 181;
+  int16_t screen_top  = car.cam_y - 128;
+
+  // 2. ハードウェアの解像度（1024x1024）へ投影（リニア変換）
+  // ※ここが重要：物理マップ1440を、1024ドット幅に圧縮してGVRAMへ送る
+  int16_t gvram_scrl_x = ((int32_t)screen_left * 1024) / 1440;
+  int16_t gvram_scrl_y = screen_top; // 縦は1:1なのでそのまま
+
+  // 3. レジスタへ反映
+  GR0_SCRL[0] = gvram_scrl_x & 1023;
+  GR0_SCRL[1] = gvram_scrl_y & 1023;
 }
 
 //
@@ -223,6 +238,30 @@ static void deploy_graphics(const uint8_t* packed_grp) {
   }
 }
 
+static void init_player_camera(PLAYER_CAMERA *car, int16_t start_x, int16_t start_y) {
+    // --- 1. 物理演算用（16倍固定小数点） ---
+    // スタート地点を16倍の世界にセット
+    car->x = (int32_t)start_x << 4;
+    car->y = (int32_t)start_y << 4;
+    car->speed = 0;
+    car->angle = 0;
+    car->sub_angle = 0;
+
+    // --- 2. 画面制御用（等倍ドット座標） ---
+    // まずカメラを配置（世界の端を意識してクランプ）
+    car->cam_x = start_x;
+    if (car->cam_x < 128)  car->cam_x = 128;
+    if (car->cam_x > 1312) car->cam_x = 1312;
+
+    car->cam_y = start_y;
+    if (car->cam_y < 128)  car->cam_y = 128;
+    if (car->cam_y > 896)  car->cam_y = 896;
+
+    // スプライトは必ず画面中央から始まる
+    car->sp_x = 128;
+    car->sp_y = 128;
+}
+
 //
 //  main
 //
@@ -287,6 +326,9 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   // ゲームループ
 game_start:
 
+  // カメラ位置初期化
+  init_player_camera(&car, 1440/2, 1024/2);
+
   // ハイスコア表示(値の初期化はしない)
   //put_hi_score(hi_score);
 
@@ -327,11 +369,6 @@ game_start:
   // タイマーAリセット(これをしないとハードリセット直後のVSYNC割り込みが正常にスタートしない)
   reset_timer_a();
 
-  // 16倍世界（固定小数点）でのそれぞれの限界値を定義
-  // 1440 << 4 = 23040,  1024 << 4 = 16384
-  const int32_t MAX_X_16 = 1440 << 4;
-  const int32_t MAX_Y_16 = 1024 << 4;
-
   // ゲームメインループ
   while (!game_over) {
 
@@ -343,12 +380,33 @@ game_start:
       }
     }
 
-    //  read analog stick data
-    //      buffer[0] ... stick up/down (0-255)
-    //      buffer[1] ... stick left/right (0-255)
-    //      buffer[2] ... throttle up/down (0-255)
-    //      buffer[3] ... option up/down
-    //      buffer[4] ... trigger -|-|-|-|A|B|A'|B'|A+A'|B+B'|C|D|E1|E2|START|SELECT
+    // ----------------------------------------------------------------
+    // 1. まず足元の路面属性をチェックし、「現在の最高速度制限」を決める
+    // ----------------------------------------------------------------
+    int16_t map_x = car.x >> 4;
+    int16_t map_y = car.y >> 4;
+    uint32_t map_index = ((uint32_t)map_y * 1440) + map_x;
+    uint8_t surface_attr = physical_map[map_index] & 7;
+
+    int16_t speed_limit = 32; // デフォルトの道路上での最高速度（上限を48から下げた値）
+
+    if (surface_attr == 6) {
+        // グラベル（砂利）なら、強制的に最高速を「12」や「16」に制限！
+        speed_limit = 12; 
+    } 
+    else if (surface_attr == 3 || surface_attr == 4 || surface_attr == 5) {
+        // 道路・縁石なら制限なし（32のまま）
+        speed_limit = 32;
+    } 
+    else {
+        // 芝生なら、最高速を「20」程度に制限
+        speed_limit = 20;
+    }
+
+    // ----------------------------------------------------------------
+    // 2. アナログコントローラの入力を「目標速度」として取得
+    // ----------------------------------------------------------------
+    // 例：サイバースティックの前後レバーのアナログ値（0〜32）をそのまま目標速度にする
     ajoy_read(ajoy_buffer);
 
     // スロットルによるスピード調整
@@ -359,21 +417,25 @@ game_start:
     if (throttle_raw >= 158) {
         accel_amount = throttle_raw - 158; // 引くほど値が大きくなる（0 〜 97）
     }
-    // 16倍世界の速度（0 〜 48）へ滑らかに無段階マッピング
-    car.speed = (accel_amount * 48) / 97;
 
-    // 128 - 遊び30 = 98 以下のとき、奥に倒されている（ブレーキON）と判定
-    int16_t brake_amount = 0;
-    if (throttle_raw <= 98) {
-      brake_amount = 98 - throttle_raw; // 奥へ倒すほど値が大きくなる（0 〜 98）
+    int16_t target_speed = accel_amount * 32 / 97; 
+
+    // もしアナログコントローラの最大値が48などの場合は、ここで路面制限に合わせます
+    if (target_speed > speed_limit) {
+        target_speed = speed_limit; // コントローラ全開でも、路面リミッターで頭打ちにする
     }
 
-    // もしブレーキがONなら、その量に応じて速度を減速させる（例）
-    if (brake_amount > 0) {
-      // ブレーキ量（0〜98）を、1フレームあたりの減速度（16倍世界の値で0〜4など）に変換
-      int16_t deceleration = (brake_amount * 4) / 98;
-      car.speed -= deceleration;
-      if (car.speed < 0) car.speed = 0;
+    // ----------------------------------------------------------------
+    // 3. 実際の車の速度（car.speed）を、目標速度に向けてじわじわ近づける（慣性）
+    // ----------------------------------------------------------------
+    if (car.speed < target_speed) {
+        // 加速中：1フレームごとにじわじわスピードアップ
+        car.speed += 1; 
+    } 
+    else if (car.speed > target_speed) {
+        // 減速中（グラベル突入時など）：ガガガッと強めに減速させるため「-2」や「-3」にする
+        car.speed -= 2; 
+        if (car.speed < target_speed) car.speed = target_speed;
     }
 
     // レバーのX軸（左右）で角度インデックスを微調整
@@ -383,36 +445,49 @@ game_start:
         
         // 分母を「512」から「4096（0x1000）」または「2048」に跳ね上げます！
         // これにより、旋回スピードが一律で 1/4 〜 1/8 にマイルド化します。
-        car.sub_angle += (turn_power / 2048); 
+        car.sub_angle += (turn_power / 1440); 
         
         car.sub_angle &= 511; // 0〜511の範囲に丸める
         car.angle = car.sub_angle >> 4; // 0〜31のインデックス（VSYNCハンドラがこれを参照）
     }
 
-    // 1. 移動と物理世界のクリッピング（1440x1024ベース）
+    // 1. まず車を物理世界の中で動かす（1440x1024ベース）
     car.x += ((int32_t)car.speed * cos_table[car.angle]) >> 8;
     car.y += ((int32_t)car.speed * sin_table[car.angle]) >> 8;
 
-    if (car.x < 0) car.x = 0;
-    if (car.x >= (1440 << 4)) car.x = (1440 << 4) - 1;
-    if (car.y < 0) car.y = 0;
-    if (car.y >= (1024 << 4)) car.y = (1024 << 4) - 1;
+    // 16倍世界から通常のドット座標へ（一旦クランプなしで変換）
+    map_x = car.x >> 4;
+    map_y = car.y >> 4;
 
-    // 等倍ドット座標を一時マッピング
-    int16_t map_x = car.x >> 4;
-    int16_t map_y = car.y >> 4;
-
-    // 2. カメラ座標を世界の端でクランプ（構造体メンバーへ直接格納）
+    // 2. カメラ座標を決定
     car.cam_x = map_x;
-    if (car.cam_x < 128)  car.cam_x = 128;
-    if (car.cam_x > 1312) car.cam_x = 1312;
+    if (car.cam_x < 181)  car.cam_x = 181;
+    if (car.cam_x > 1259) car.cam_x = 1259; // 1440 - 128*1.41
 
     car.cam_y = map_y;
     if (car.cam_y < 128)  car.cam_y = 128;
-    if (car.cam_y > 896)  car.cam_y = 896;
+    if (car.cam_y > 896)  car.cam_y = 896;  // 1024 - 128
 
-    // 3. 自車の画面スプライト表示座標（構造体メンバーへ直接格納）
-    car.sp_x = 128 + (map_x - car.cam_x);
+    // 3. カメラの位置を基準にクランプする
+    int16_t min_x = car.cam_x - 181; 
+    int16_t max_x = car.cam_x + 181; 
+    int16_t min_y = car.cam_y - 128;
+    int16_t max_y = car.cam_y + 128;
+    
+    // ★【修正】：画面のフチ（ガード）にぶつかった時「だけ」、
+    // 物理座標（map）を押し戻し、さらに固定小数点（car.x/y）もフチの座標でガチッと上書きします。
+    if (map_x < min_x) { map_x = min_x; car.x = (int32_t)map_x << 4; }
+    if (map_x > max_x) { map_x = max_x; car.x = (int32_t)map_x << 4; }
+
+    if (map_y < min_y) { map_y = min_y; car.y = (int32_t)map_y << 4; }
+    if (map_y > max_y) { map_y = max_y; car.y = (int32_t)map_y << 4; }
+
+    // 【撤廃】：常時行われていた car.x = map_x << 4; などの一括上書きを削除！
+    // これにより、ぶつかっていない時は car.y の下位ビット（小数）が毎フレーム蓄積されます。
+
+    // 画面の中心位置 128 (ピクセル) + (車とカメラの物理距離)
+    // ただし、物理距離をピクセル単位にスケール変換する必要がある
+    car.sp_x = 128 + (int16_t)(((int32_t)(map_x - car.cam_x) * 256) / 362);
     car.sp_y = 128 + (map_y - car.cam_y);
 
     WAIT_VBLANK;
