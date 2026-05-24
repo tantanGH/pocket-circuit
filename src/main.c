@@ -246,6 +246,7 @@ static void init_player_camera(PLAYER_CAMERA *car, int16_t start_x, int16_t star
     car->speed = 0;
     car->angle = 0;
     car->sub_angle = 0;
+    car->current_turn = 0;
 
     // --- 2. 画面制御用（等倍ドット座標） ---
     // まずカメラを配置（世界の端を意識してクランプ）
@@ -388,28 +389,27 @@ game_start:
     uint32_t map_index = ((uint32_t)map_y * 1440) + map_x;
     uint8_t surface_attr = physical_map[map_index] & 7;
 
-    int16_t speed_limit = 32; // デフォルトの道路上での最高速度（上限を48から下げた値）
+    int16_t speed_limit = 32 << 8; // デフォルトの道路上での最高速度（上限を48から下げた値）
 
     if (surface_attr == 6) {
         // グラベル（砂利）なら、強制的に最高速を「12」や「16」に制限！
-        speed_limit = 12; 
+        speed_limit = 12 << 8; 
     } 
     else if (surface_attr == 3 || surface_attr == 4 || surface_attr == 5) {
         // 道路・縁石なら制限なし（32のまま）
-        speed_limit = 32;
+        speed_limit = 32 << 8;
     } 
     else {
         // 芝生なら、最高速を「20」程度に制限
-        speed_limit = 20;
+        speed_limit = 20 << 8;
     }
 
     // ----------------------------------------------------------------
     // 2. アナログコントローラの入力を「目標速度」として取得
     // ----------------------------------------------------------------
-    // 例：サイバースティックの前後レバーのアナログ値（0〜32）をそのまま目標速度にする
     ajoy_read(ajoy_buffer);
 
-    // スロットルによるスピード調整
+    // スロットル生データ(0-255)取得
     int16_t throttle_raw = ajoy_buffer[2];
     
     // 128 + 遊び30 = 158 以上のとき、手前に引かれている（アクセルON）と判定
@@ -418,7 +418,7 @@ game_start:
         accel_amount = throttle_raw - 158; // 引くほど値が大きくなる（0 〜 97）
     }
 
-    int16_t target_speed = accel_amount * 32 / 97; 
+    int16_t target_speed = accel_amount * (32 << 8) / 97; 
 
     // もしアナログコントローラの最大値が48などの場合は、ここで路面制限に合わせます
     if (target_speed > speed_limit) {
@@ -428,32 +428,52 @@ game_start:
     // ----------------------------------------------------------------
     // 3. 実際の車の速度（car.speed）を、目標速度に向けてじわじわ近づける（慣性）
     // ----------------------------------------------------------------
-    if (car.speed < target_speed) {
-        // 加速中：1フレームごとにじわじわスピードアップ
-        car.speed += 1; 
+    // 現在の速度と目標速度の差分を計算
+    int16_t speed_diff = target_speed - car.speed;
+
+    if (speed_diff > 0) {
+        // 【加速中】：差分が大きければグッと加速し、目標に近づくほど緩やかになる
+        // シフト演算（>> 4）で「差分の1/16」ずつ近づける。
+        // 最低でも「1」は加速させるために +1 などの底上げを挟むと滑らかです。
+        car.speed += (speed_diff >> 4) + 1;
+        
+        // 行き過ぎ防止
+        if (car.speed > target_speed) car.speed = target_speed;
     } 
-    else if (car.speed > target_speed) {
-        // 減速中（グラベル突入時など）：ガガガッと強めに減速させるため「-2」や「-3」にする
-        car.speed -= 2; 
+    else if (speed_diff < 0) {
+        // 【減速中】：グラベル突入やアクセルOFF時
+        // 減速を少し強め（例：差分の1/8ずつ戻す）にしたい場合は >> 3 にします。
+        // 逆にすーっと滑らかに転がしたい場合は >> 4 のままにします。
+        car.speed += (speed_diff >> 6) - 1; // 負の数なので加算して、最低でも-1
+        
+        // 行き過ぎ防止
         if (car.speed < target_speed) car.speed = target_speed;
     }
-
-    // レバーのX軸（左右）で角度インデックスを微調整
+// レバーのX軸（左右）で角度インデックスを微調整
     int16_t ax = ajoy_buffer[1] - 128;
-    if (ax < -15 || ax > 15) { // センター付近の「遊び」を確保
-        int32_t turn_power = (int32_t)ax * car.speed;
+    
+    // 1. レバー入力から「目標の旋回パワー（target_turn）」を計算
+    int32_t target_turn = 0;
+    if (ax < -15 || ax > 15) { // 遊び
+        target_turn = (int32_t)ax * (car.speed >> 8);
+    }
+
+    // ★ここで慣性を効かせる（目標に1/8ずつ近づく。ここを調整するとハンドルの重さが変わる）
+    car.current_turn += (target_turn - car.current_turn) / 8;
+
+    // 3. 慣性が乗った実際の旋回パワーで角度を更新
+    if (car.current_turn < -10 || car.current_turn > 10) { // 微小な残留振動をカット
+        // 分母は元の挙動に合わせて調整してください
+        car.sub_angle += (car.current_turn / 1440); 
         
-        // 分母を「512」から「4096（0x1000）」または「2048」に跳ね上げます！
-        // これにより、旋回スピードが一律で 1/4 〜 1/8 にマイルド化します。
-        car.sub_angle += (turn_power / 1440); 
-        
-        car.sub_angle &= 511; // 0〜511の範囲に丸める
-        car.angle = car.sub_angle >> 4; // 0〜31のインデックス（VSYNCハンドラがこれを参照）
+        // 512段階（0〜511）のループ処理を安全に行うため、負の数対策を添える
+        car.sub_angle = (car.sub_angle + 512) & 511; 
+        car.angle = car.sub_angle >> 4; // 32方向のインデックスへ
     }
 
     // 1. まず車を物理世界の中で動かす（1440x1024ベース）
-    car.x += ((int32_t)car.speed * cos_table[car.angle]) >> 8;
-    car.y += ((int32_t)car.speed * sin_table[car.angle]) >> 8;
+    car.x += (int32_t)(car.speed * cos_table[car.angle]) >> 16;
+    car.y += (int32_t)(car.speed * sin_table[car.angle]) >> 16;
 
     // 16倍世界から通常のドット座標へ（一旦クランプなしで変換）
     map_x = car.x >> 4;
