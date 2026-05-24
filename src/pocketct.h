@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define VERSION "0.1.4 (2026/05/24)"
+#define VERSION "0.1.5 (2026/05/24)"
 
 // デフォルトハイスコア
 #define DEFAULT_HI_SCORE (76500)
@@ -21,6 +21,10 @@
 #define CAM_Y_MIN (128)       // 256/2
 #define CAM_Y_MAX (896)       // PHYS_H - CAM_Y_MIN
 
+// コースデータファイル名
+#define COURSE_PHYS_DATA_FILE  "course1.dat"
+#define COURSE_DISP_DATA_FILE  "course1.grp"
+
 typedef struct {
 
   // --- 1. 物理演算用 ---
@@ -32,13 +36,19 @@ typedef struct {
   int16_t move_angle;   // 実際に進む向き（0 ~ 31 の256倍精度固定小数点）
   
   int32_t current_turn; // 現在のステアリング回転力
-  int16_t is_spinning;  // スピン状態フラグ
 
   // --- 2. 画面制御用 ---
   int16_t cam_x;        // 表示画面の中央に位置する物理世界のX座標 (181 ~ 1259)
   int16_t cam_y;        // 表示画面の中央に位置する物理世界のY座標 (128 ~ 896)
   int16_t sp_x;         // 車体中心の表示画面上のX座標(0 ~ 255) *スプライト画面のオフセット(16)考慮なし
   int16_t sp_y;         // 車体中心の表示画面上のY座標(0 ~ 255) *スプライト画面のオフセット(16)考慮なし
+
+  // ラップカウント用
+  uint32_t score;           // 現在のスコア
+  int16_t lap_count;        // 現在の周回数（1からスタート）
+  int16_t next_checkpoint;  // 次に通過すべきチェックポイント番号（0〜3）
+  int16_t last_gate;        // 最後に通ったチェックポイント
+  int16_t wrong_way;        // 今道を外れているか
 
 } PLAYER_CAMERA;
 

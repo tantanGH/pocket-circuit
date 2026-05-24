@@ -6,40 +6,27 @@ import math
 PHYS_W, PHYS_H = 1440, 1024
 DISP_W, DISP_H = 1024, 1024
 
-# パレット・属性値
+# パレット・属性値（下位3ビット: 0〜7）
 COLOR_LAWN1  = 1; COLOR_LAWN2  = 2; COLOR_ROAD   = 3
 COLOR_KERB_W = 4; COLOR_KERB_R = 5; COLOR_GRAVEL = 6
-COLOR_LAWN1_H = 9; COLOR_LAWN2_H = 10; COLOR_ROAD_H = 11
+COLOR_LAWN1_H = 9; COLOR_LAWN2_H = 10; COLOR_ROAD_H = 11  # ★11を明るいスタートラインに使用
 COLOR_KERB_W_H = 12; COLOR_KERB_R_H = 13; COLOR_GRAVEL_H = 14
 
 def resample_contour_equidistant(contour_pts, step=2.0):
-    """
-    不均等な輪郭点列を、物理的に等間隔（デフォルト2ピクセル）の点列に再サンプリングする
-    """
     if len(contour_pts) < 2:
         return contour_pts
-    # 閉路にするために終点と始点を繋ぐ
     pts = np.vstack([contour_pts, contour_pts[0]])
-    
-    # 各点間の距離を計算
     deltas = np.diff(pts, axis=0)
     segment_lengths = np.sqrt((deltas ** 2).sum(axis=1))
-    
-    # 始点からの累積距離を計算
     cum_dist = np.insert(np.cumsum(segment_lengths), 0, 0.0)
     total_length = cum_dist[-1]
-    
-    # 等間隔なサンプリングターゲット距離の配列を作成
     target_dists = np.arange(0, total_length, step)
-    
-    # 各ターゲット距離に対応する座標を線形補間
     resampled_x = np.interp(target_dists, cum_dist, pts[:, 0])
     resampled_y = np.interp(target_dists, cum_dist, pts[:, 1])
-    
     return np.column_stack((resampled_x, resampled_y))
 
 def main():
-    print("Generating perfectly aligned kerb stripes (Outer/Inner Separation)...")
+    print("Generating perfectly aligned kerb stripes with Checkpoints...")
     phys_map = np.full((PHYS_H, PHYS_W), COLOR_LAWN1, dtype=np.uint8)
 
     # 制御点
@@ -77,38 +64,24 @@ def main():
     # 道路をプロット
     phys_map[road_mask] = COLOR_ROAD
 
-    # ----------------------------------------------------
-    # ★【修正の核心】外側・内側のフチを完全に分離してストライプを引く
-    # ----------------------------------------------------
+    # 縁石（ストライプ）の分離生成処理
     road_contour_img = np.zeros((PHYS_H, PHYS_W), dtype=np.uint8)
     road_contour_img[road_mask] = 255
-    
-    # RETR_TREE で階層構造として輪郭を抽出する
-    # これにより、ドーナツ状のコースの「外周（最外郭）」と「内周（穴）」が完全に分離されます
     contours, hierarchy = cv2.findContours(road_contour_img, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
     
     if len(contours) >= 1:
-        outer_contour_pts = None
-        inner_contour_pts = None
-        
-        # 通常、もっとも面積が大きいのが外周、その次（または最外郭の子階層）が内周になります
-        # 安全のために面積ベースで上位2つを仕分けます
         sorted_contours = sorted(contours, key=cv2.contourArea, reverse=True)
-        
         outer_contour_pts = sorted_contours[0].reshape(-1, 2)
         if len(sorted_contours) > 1:
             inner_contour_pts = sorted_contours[1].reshape(-1, 2)
-            
-        # それぞれを2ピクセル等間隔の綺麗な独立パスへリサンプリング
+        
         step_pixel = 2.0
         equidistant_outer = resample_contour_equidistant(outer_contour_pts, step=step_pixel)
-        
         if inner_contour_pts is not None:
             equidistant_inner = resample_contour_equidistant(inner_contour_pts, step=step_pixel)
         else:
-            equidistant_inner = equidistant_outer  # 万が一内周がない場合のセーフティ
+            equidistant_inner = equidistant_outer
 
-        # 独立したそれぞれのフチに対する距離マップ（マスク側ピクセルがどちらに所属するかを判定用）
         outer_img = np.zeros((PHYS_H, PHYS_W), dtype=np.uint8)
         cv2.drawContours(outer_img, [sorted_contours[0]], -1, 255, 1)
         dist_to_outer = cv2.distanceTransform(255 - outer_img, cv2.DIST_L2, 5)
@@ -120,59 +93,95 @@ def main():
         else:
             dist_to_inner = np.full((PHYS_H, PHYS_W), 9999.0, dtype=np.float32)
 
-        # 縁石マスク内のすべてのピクセル座標を取得
         kerb_y, kerb_x = np.where(kerb_mask)
-        
-        print("Mapping kerb pixels to separated equidistant contours...")
-        
         for y, x in zip(kerb_y, kerb_x):
-            # この縁石ピクセルが「外周のフチ」と「内周のフチ」のどっちに近いか判定
             if dist_to_outer[y, x] <= dist_to_inner[y, x]:
-                # 外周（アウター側）のパスから一番近い点を探す
                 distances = (equidistant_outer[:, 0] - x) ** 2 + (equidistant_outer[:, 1] - y) ** 2
                 closest_idx = np.argmin(distances)
                 actual_distance_pixels = closest_idx * step_pixel
             else:
-                # 内周（インナー側）のパスから一番近い点を探す
                 distances = (equidistant_inner[:, 0] - x) ** 2 + (equidistant_inner[:, 1] - y) ** 2
                 closest_idx = np.argmin(distances)
                 actual_distance_pixels = closest_idx * step_pixel
             
-            # 32ドット（ピクセル）周期で赤白を決定
             sector = (int(actual_distance_pixels) // 32) % 2
-            
             if sector == 0:
-                phys_map[y, x] = COLOR_KERB_R  # 完全に単色の赤 (5)
+                phys_map[y, x] = COLOR_KERB_R
             else:
-                phys_map[y, x] = COLOR_KERB_W  # 完全に単色の白 (4)
+                phys_map[y, x] = COLOR_KERB_W
 
-    # 道路フチの黒線で引き締め
+    # 道路フチの黒線
     phys_map[black_line_mask] = 0
 
+# ====================================================================
+    # ★【調整版】見えないチェックポイント（ゲート）の範囲をユルく拡張
+    # ====================================================================
+    print("Embedding Checkpoint Gates into Upper 4 Bits (With Loose Margin)...")
+    
+    gate_lines = [
+        # (始点x, 始点y, 終点x, 終点y, ゲートID 1〜4)
+        (350, 700, 350, 1000,  1), # ゲート1: スタートライン（縦に少し長めに引く）
+        (1050, 750, 1440, 650, 2), # ゲート2: 第1コーナー先の東側
+        (700, 150,  800, 500,  3), # ゲート3: 北側のヘアピン頂点
+        (450, 250,  50,  550,  4)  # ゲート4: 最終コーナー手前の西側
+    ]
+
+    for x1, y1, x2, y2, gate_id in gate_lines:
+        gate_mask = np.zeros((PHYS_H, PHYS_W), dtype=np.uint8)
+        
+        # ★【調整ポイント1】
+        # 線の太さを 30 から 「60ピクセル」に倍増させ、通過時のチャタリング防止猶予を増やします
+        cv2.line(gate_mask, (x1, y1), (x2, y2), 255, thickness=60)
+        
+        # ★【調整ポイント2：最重要】
+        # アスファルト(road_mask)だけでなく、縁石(kerb_mask)も含めた場所にゲートを適用。
+        # さらに、ドリフトで大きくアウト側にハミ出しても大丈夫なように、
+        # 距離変換（dist_map）を使って「コースの芯線から100ピクセル以内（芝生含む）」まで判定をユルく広げます。
+        target_pixels = (gate_mask == 255) & (dist_map <= 100)
+        
+        # ゲート1（スタートライン）の視覚的なグラフィック書き換えは、
+        # 見栄えのために今まで通り「道路と縁石の上だけ」にしておきます
+        visual_pixels = target_pixels & (road_mask | kerb_mask)
+        if gate_id == 1 or gate_id == 2 or gate_id == 3 or gate_id == 4:
+            # 道路部分を明るい道路(11)に
+            phys_map[target_pixels & road_mask] = COLOR_ROAD_H
+            # もしお好みで、スタートラインの縁石も明るくするならここに足せます
+        
+        # 上位4ビットにゲートIDを合成
+        phys_map[target_pixels] |= (gate_id << 4)
+
+    # ====================================================================
+
     # ヘッダー作成
-    start_x = 200
+    start_x = 350 - 60
     start_y = 850
-    start_angle_32 = 0  # 32方向（0〜31）のインデックスで指定（例：0は右向き）
+    start_angle_32 = 0
 
-    # 32バイトのヘッダをバイナリで構築
     header = bytearray(32)
-    header[0:4] = b'MAP1'                                   # マジックナンバー
-    header[4:6] = int(start_x).to_bytes(2, 'big')           # 等倍X
-    header[6:8] = int(start_y).to_bytes(2, 'big')           # 等倍Y
-    header[8:10] = int(start_angle_32).to_bytes(2, 'big')   # 32方向角度
+    header[0:4] = b'MAP1'
+    header[4:6] = int(start_x).to_bytes(2, 'big')
+    header[6:8] = int(start_y).to_bytes(2, 'big')
+    header[8:10] = int(start_angle_32).to_bytes(2, 'big')
 
-    # ヘッダと物理マップデータを結合して保存
     with open("course1.dat", "wb") as f:
         f.write(header)
         f.write(phys_map.tobytes())
 
-    # 表示用データの生成 (1024x1024 キャンバス構築 ＆ マージンへのノイズ)
+    # ====================================================================
+    # ★【修正版】表示用データの生成 (.grp 用)
+    # ====================================================================
     disp_resized_w = DISP_H
     disp_resized = cv2.resize(phys_map, (disp_resized_w, DISP_H), interpolation=cv2.INTER_NEAREST)
     
+    # 上位4ビットのゲート情報をクリアし、輝度情報を含む「下位4ビット（0x0F）」のみを残す！
+    # スタートラインの 11 (COLOR_ROAD_H) もそのまま綺麗に残ります
+    disp_resized = disp_resized & 0x0F
+
     disp_map = np.full((DISP_H, DISP_W), COLOR_LAWN1, dtype=np.uint8)
     margin_x = (DISP_W - disp_resized_w) // 2
     disp_map[:, margin_x:margin_x + disp_resized_w] = disp_resized
+
+    # （以下、元のランダムノイズ・4bitパック処理へ続く）
 
     print("Applying random grain noise...")
     rand_matrix = np.random.rand(DISP_H, DISP_W)
@@ -191,7 +200,7 @@ def main():
 
     with open("course1.grp", "wb") as f:
         f.write(packed_disp.tobytes())
-    print("Kerb lines fixed perfectly with Outer/Inner separation!")
+    print("Successfully generated track with 4 encoded checkpoint gates!")
 
 if __name__ == "__main__":
     main()
