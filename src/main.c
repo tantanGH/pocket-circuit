@@ -53,15 +53,12 @@ static void __attribute__((interrupt)) refresh_screen() {
 
   // グラフィック座標（car.sp_x）を、スプライト座標（+16）へ変換し、
   // さらに32x32スプライトの左上基準（-16）を引く
-  // ※ つまり、16 + car.sp_x - 16 となり、完全に相殺されて sp_base_x = car.sp_x になります！
   int16_t sp_base_x = car.sp_x; 
   int16_t sp_base_y = car.sp_y;
   
-  // 例：車が一番左端（car.sp_x == 16）にいるとき、sp_base_x は 0 になります。
-  // スプライトレジスタに「0」を書き込むと、X68000の画面上の「16ドット目」から
-  // スプライトが描画されるため、グラフィック画面の左端と1ミリの狂いもなくピッタリ一致します！
-
-  uint16_t pattern_base = 0x100 + car.angle * 4;
+  // 32段階回転のどのパターンを使うか
+  // 1方向ごとに4パターン使う
+  uint16_t pattern_base = 0x100 + ((car.angle >> 4) << 2);
 
   // 自車の表示 (スプライト0-4) ★car.sp_x/y をベースに田の字配置
   SP_SCRL[  0 ] = sp_base_x;
@@ -86,12 +83,12 @@ static void __attribute__((interrupt)) refresh_screen() {
 
 
   // 1. 物理的な「画面左上端」を求める（中心cam_x - 画面物理幅の半分181）
-  int16_t screen_left = car.cam_x - 181;
-  int16_t screen_top  = car.cam_y - 128;
+  int16_t screen_left = car.cam_x - CAM_X_MIN;
+  int16_t screen_top  = car.cam_y - CAM_Y_MIN;
 
   // 2. ハードウェアの解像度（1024x1024）へ投影（リニア変換）
   // ※ここが重要：物理マップ1440を、1024ドット幅に圧縮してGVRAMへ送る
-  int16_t gvram_scrl_x = ((int32_t)screen_left * 1024) / 1440;
+  int16_t gvram_scrl_x = ((int32_t)screen_left * DISP_W) / PHYS_W;
   int16_t gvram_scrl_y = screen_top; // 縦は1:1なのでそのまま
 
   // 3. レジスタへ反映
@@ -154,8 +151,8 @@ static void init_sp_pcg() {
   // VBLANK待ち
   WAIT_VBLANK;
 
-  // SP:ON TX:ON GR0:ON
-  *VDC_R2 |= 0x61;                        
+  // SP:ON TX:ON GS4:OFF
+  *VDC_R2 |= 0x60;                        
 
   // Priority TX > SP > GR
   *VDC_R1 = (*VDC_R1 & 0xff) | 0x1200;    
@@ -222,7 +219,10 @@ static void deploy_graphics(const uint8_t* packed_grp) {
 
   uint32_t* dest = (uint32_t*)GVRAM;
   const uint16_t* src = (const uint16_t*)packed_grp;
-    
+
+  // SP:ON TX:ON GS4:OFF
+  *VDC_R2 |= 0x60;     
+
   // 512KBのパックデータは、16bit（4ドット分）が 262,144 個並んでいる
   // これを1ループで2ワード（4ドット）ずつ処理
   for (uint32_t i = 0; i < 256*1024; i++) {
@@ -236,31 +236,37 @@ static void deploy_graphics(const uint8_t* packed_grp) {
     *dest++ = g1; // 32bitバスへ一発書き込み（2ドット分）
     *dest++ = g2; // 32bitバスへ一発書き込み（2ドット分）
   }
+
+  // SP:ON TX:ON GS4:ON
+  *VDC_R2 |= 0x70; 
 }
 
-static void init_player_camera(PLAYER_CAMERA *car, int16_t start_x, int16_t start_y) {
-    // --- 1. 物理演算用（16倍固定小数点） ---
-    // スタート地点を16倍の世界にセット
-    car->x = (int32_t)start_x << 4;
-    car->y = (int32_t)start_y << 4;
-    car->speed = 0;
-    car->angle = 0;
-    car->sub_angle = 0;
-    car->current_turn = 0;
+// プレーヤーオブジェクト初期化
+static void player_camera_init(PLAYER_CAMERA *car, int16_t start_x, int16_t start_y, int16_t start_angle) {
 
-    // --- 2. 画面制御用（等倍ドット座標） ---
-    // まずカメラを配置（世界の端を意識してクランプ）
-    car->cam_x = start_x;
-    if (car->cam_x < 128)  car->cam_x = 128;
-    if (car->cam_x > 1312) car->cam_x = 1312;
+  // --- 物理演算用パラメータ初期化 ---
+  car->x = (int32_t)start_x << 4;
+  car->y = (int32_t)start_y << 4;
+  car->speed = 0;
 
-    car->cam_y = start_y;
-    if (car->cam_y < 128)  car->cam_y = 128;
-    if (car->cam_y > 896)  car->cam_y = 896;
+  car->angle = start_angle << 4;
+  car->move_angle = start_angle << 4;
 
-    // スプライトは必ず画面中央から始まる
-    car->sp_x = 128;
-    car->sp_y = 128;
+  car->current_turn = 0;
+  car->is_spinning = 0;
+
+  // --- 画面制御用パラメータ初期化 ---
+  car->cam_x = start_x;
+  if (car->cam_x < CAM_X_MIN) car->cam_x = CAM_X_MIN;
+  if (car->cam_x > CAM_X_MAX) car->cam_x = CAM_X_MAX;
+
+  car->cam_y = start_y;
+  if (car->cam_y < CAM_Y_MIN) car->cam_y = CAM_Y_MIN;
+  if (car->cam_y > CAM_Y_MAX) car->cam_y = CAM_Y_MAX;
+
+  // スプライト位置初期化
+  car->sp_x = 128;
+  car->sp_y = 128;
 }
 
 //
@@ -319,16 +325,14 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   //uint32_t hi_score = DEFAULT_HI_SCORE;
 
   // 物理マップへのポインタ
+  uint8_t* course_data = NULL;
   uint8_t* physical_map = NULL;
 
   // 描画データへのポインタ
-  uint8_t* packed_grp = NULL;
+  uint8_t* grp_data = NULL;
 
   // ゲームループ
 game_start:
-
-  // カメラ位置初期化
-  init_player_camera(&car, 1440/2, 1024/2);
 
   // ハイスコア表示(値の初期化はしない)
   //put_hi_score(hi_score);
@@ -338,18 +342,25 @@ game_start:
   //put_score(score);
 
   // ファイルからデータをロード
-  physical_map = load_file("course1.dat", PHYS_W * PHYS_H);
-  packed_grp = load_file("course1.grp", DISP_W * (DISP_W / 2));
+  course_data = load_file("course1.dat", PHYS_W * PHYS_H);
+  physical_map = course_data + 32;
+  grp_data = load_file("course1.grp", DISP_W * (DISP_W / 2));
     
-  if (!physical_map || !packed_grp) {
+  if (!course_data || !grp_data) {
     printf("Load failed.\n");
     goto exit;
   }
     
+  // カメラ位置初期化
+  uint16_t s_x     = *(uint16_t*)(course_data + 4);
+  uint16_t s_y     = *(uint16_t*)(course_data + 6);
+  uint16_t s_angle = *(uint16_t*)(course_data + 8);
+  player_camera_init(&car, s_x, s_y, s_angle);
+
   // グラフィックをGVRAMに展開
-  deploy_graphics(packed_grp);
-  free(packed_grp); // 表示用の一時バッファは用済みなので解放
-  packed_grp = NULL;
+  deploy_graphics(grp_data);
+  free(grp_data); // 表示用の一時バッファは用済みなので解放
+  grp_data = NULL;
 
   // サイバースティック読み出し用バッファ
   uint16_t ajoy_buffer[5];
@@ -418,7 +429,8 @@ game_start:
         accel_amount = throttle_raw - 158; // 引くほど値が大きくなる（0 〜 97）
     }
 
-    int16_t target_speed = accel_amount * (32 << 8) / 97; 
+//    int16_t target_speed = accel_amount * (32 << 8) / 97; 
+    int16_t target_speed = accel_amount * (24 << 8) / 97; 
 
     // もしアナログコントローラの最大値が48などの場合は、ここで路面制限に合わせます
     if (target_speed > speed_limit) {
@@ -449,31 +461,40 @@ game_start:
         // 行き過ぎ防止
         if (car.speed < target_speed) car.speed = target_speed;
     }
-// レバーのX軸（左右）で角度インデックスを微調整
+
+    // レバーのX軸（左右）で角度インデックスを微調整
     int16_t ax = ajoy_buffer[1] - 128;
     
     // 1. レバー入力から「目標の旋回パワー（target_turn）」を計算
     int32_t target_turn = 0;
-    if (ax < -15 || ax > 15) { // 遊び
+    if (ax < -15 || ax > 15) { // センター付近の「遊び」
+        // 車速が乗っているほどよく曲がる（仕様に合わせて調整してください）
         target_turn = (int32_t)ax * (car.speed >> 8);
     }
 
-    // ★ここで慣性を効かせる（目標に1/8ずつ近づく。ここを調整するとハンドルの重さが変わる）
+    // 2. 現在の旋回パワーを目標に近づける（ステアリング慣性）
+    // ※current_turn は構造体（car.current_turn）のものを使用
     car.current_turn += (target_turn - car.current_turn) / 8;
 
-    // 3. 慣性が乗った実際の旋回パワーで角度を更新
-    if (car.current_turn < -10 || car.current_turn > 10) { // 微小な残留振動をカット
-        // 分母は元の挙動に合わせて調整してください
-        car.sub_angle += (car.current_turn / 1440); 
+    // 3. 慣性が乗った実際の旋回パワーで車の向き（angle）を更新
+    if (car.current_turn < -10 || car.current_turn > 10) {
+        // 旋回パワーを角度の変化量に変換（分母は元の操作感に合わせて調整）
+        car.angle += (car.current_turn / 1440); 
         
-        // 512段階（0〜511）のループ処理を安全に行うため、負の数対策を添える
-        car.sub_angle = (car.sub_angle + 512) & 511; 
-        car.angle = car.sub_angle >> 4; // 32方向のインデックスへ
+        // 【重要】0〜511の範囲に丸める（巡回処理）
+        // 負の数になっても安全なように 512 を足してからマスクします
+        car.angle = (car.angle + 512) & 511; 
     }
 
-    // 1. まず車を物理世界の中で動かす（1440x1024ベース）
-    car.x += (int32_t)(car.speed * cos_table[car.angle]) >> 16;
-    car.y += (int32_t)(car.speed * sin_table[car.angle]) >> 16;
+    // ヨー物理導入前なので、まずは実際の進行方向を車の向きに完全同期させておく
+    car.move_angle = car.angle;
+
+    // 32方向（0〜31）のインデックスに変換してテーブルを参照
+    int16_t table_idx = car.move_angle >> 4;
+
+    // 座標更新（car.speedは256倍、テーブルは256倍、最終的に16倍精度(>>4)にするため >>16 シフト）
+    car.x += ((int32_t)car.speed * cos_table[table_idx]) >> 16;
+    car.y += ((int32_t)car.speed * sin_table[table_idx]) >> 16;
 
     // 16倍世界から通常のドット座標へ（一旦クランプなしで変換）
     map_x = car.x >> 4;
@@ -481,18 +502,18 @@ game_start:
 
     // 2. カメラ座標を決定
     car.cam_x = map_x;
-    if (car.cam_x < 181)  car.cam_x = 181;
-    if (car.cam_x > 1259) car.cam_x = 1259; // 1440 - 128*1.41
+    if (car.cam_x < CAM_X_MIN) car.cam_x = CAM_X_MIN;
+    if (car.cam_x > CAM_X_MAX) car.cam_x = CAM_X_MAX;
 
     car.cam_y = map_y;
-    if (car.cam_y < 128)  car.cam_y = 128;
-    if (car.cam_y > 896)  car.cam_y = 896;  // 1024 - 128
+    if (car.cam_y < CAM_Y_MIN) car.cam_y = CAM_Y_MIN;
+    if (car.cam_y > CAM_Y_MAX) car.cam_y = CAM_Y_MAX;
 
     // 3. カメラの位置を基準にクランプする
-    int16_t min_x = car.cam_x - 181; 
-    int16_t max_x = car.cam_x + 181; 
-    int16_t min_y = car.cam_y - 128;
-    int16_t max_y = car.cam_y + 128;
+    int16_t min_x = car.cam_x - CAM_X_MIN; 
+    int16_t max_x = car.cam_x + CAM_X_MIN; 
+    int16_t min_y = car.cam_y - CAM_Y_MIN;
+    int16_t max_y = car.cam_y + CAM_Y_MIN;
     
     // ★【修正】：画面のフチ（ガード）にぶつかった時「だけ」、
     // 物理座標（map）を押し戻し、さらに固定小数点（car.x/y）もフチの座標でガチッと上書きします。
@@ -511,6 +532,7 @@ game_start:
     car.sp_y = 128 + (map_y - car.cam_y);
 
     WAIT_VBLANK;
+//    WAIT_VSYNC;
     
   } // ゲームメインループここまで
 
@@ -540,13 +562,13 @@ exit:
   }
 
   // バッファ解放
-  if (physical_map != NULL) {
-    free(physical_map);
-    physical_map = NULL;
+  if (course_data != NULL) {
+    free(course_data);
+    course_data = NULL;
   }
-  if (packed_grp != NULL) {
-    free(packed_grp);
-    packed_grp = NULL;
+  if (grp_data != NULL) {
+    free(grp_data);
+    grp_data = NULL;
   }
 
   // ユーザーモードに復帰
