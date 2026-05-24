@@ -58,7 +58,7 @@ static void __attribute__((interrupt)) refresh_screen() {
   
   // 32段階回転のどのパターンを使うか
   // 1方向ごとに4パターン使う
-  uint16_t pattern_base = 0x100 + ((car.angle >> 4) << 2);
+  uint16_t pattern_base = 0x100 + ((car.angle >> 8) << 2);
 
   // 自車の表示 (スプライト0-4) ★car.sp_x/y をベースに田の字配置
   SP_SCRL[  0 ] = sp_base_x;
@@ -404,15 +404,15 @@ game_start:
 
     if (surface_attr == 6) {
         // グラベル（砂利）なら、強制的に最高速を「12」や「16」に制限！
-        speed_limit = 12 << 8; 
+        speed_limit = 8 << 8; 
     } 
     else if (surface_attr == 3 || surface_attr == 4 || surface_attr == 5) {
         // 道路・縁石なら制限なし（32のまま）
-        speed_limit = 32 << 8;
+        speed_limit = 22 << 8;
     } 
     else {
         // 芝生なら、最高速を「20」程度に制限
-        speed_limit = 20 << 8;
+        speed_limit = 12 << 8;
     }
 
     // ----------------------------------------------------------------
@@ -430,7 +430,8 @@ game_start:
     }
 
 //    int16_t target_speed = accel_amount * (32 << 8) / 97; 
-    int16_t target_speed = accel_amount * (24 << 8) / 97; 
+//    int16_t target_speed = accel_amount * (24 << 8) / 97; 
+    int16_t target_speed = accel_amount * (22 << 8) / 97; 
 
     // もしアナログコントローラの最大値が48などの場合は、ここで路面制限に合わせます
     if (target_speed > speed_limit) {
@@ -462,39 +463,75 @@ game_start:
         if (car.speed < target_speed) car.speed = target_speed;
     }
 
-    // レバーのX軸（左右）で角度インデックスを微調整
+    // ================================================================
+    // 1. 車の向き（angle：0〜8191）の更新
+    // ================================================================
     int16_t ax = ajoy_buffer[1] - 128;
-    
-    // 1. レバー入力から「目標の旋回パワー（target_turn）」を計算
     int32_t target_turn = 0;
-    if (ax < -15 || ax > 15) { // センター付近の「遊び」
-        // 車速が乗っているほどよく曲がる（仕様に合わせて調整してください）
-        target_turn = (int32_t)ax * (car.speed >> 8);
+    
+    if (ax < -15 || ax > 15) {
+        // ハンドルを切ると、車の向き（angle）がクイッとインを向く
+        target_turn = (int32_t)ax * (int32_t)(car.speed >> 8);
     }
-
-    // 2. 現在の旋回パワーを目標に近づける（ステアリング慣性）
-    // ※current_turn は構造体（car.current_turn）のものを使用
+    
+    // ステアリング慣性
     car.current_turn += (target_turn - car.current_turn) / 8;
 
-    // 3. 慣性が乗った実際の旋回パワーで車の向き（angle）を更新
     if (car.current_turn < -10 || car.current_turn > 10) {
-        // 旋回パワーを角度の変化量に変換（分母は元の操作感に合わせて調整）
-        car.angle += (car.current_turn / 1440); 
-        
-        // 【重要】0〜511の範囲に丸める（巡回処理）
-        // 負の数になっても安全なように 512 を足してからマスクします
-        car.angle = (car.angle + 512) & 511; 
+        car.angle += (int16_t)(car.current_turn / 90); 
+        car.angle = (car.angle + 8192) & 8191; 
     }
 
-    // ヨー物理導入前なので、まずは実際の進行方向を車の向きに完全同期させておく
-    car.move_angle = car.angle;
+    // ================================================================
+    // 2. 【核心】進む向き（move_angle）の遅れ（ヨー・ドリフト）計算
+    // ================================================================
+    int16_t angle_diff = car.angle - car.move_angle;
+    
+    // 8192の世界での巡回補正
+    if (angle_diff > 4096)  angle_diff -= 8192;
+    if (angle_diff < -4096) angle_diff += 8192;
 
-    // 32方向（0〜31）のインデックスに変換してテーブルを参照
-    int16_t table_idx = car.move_angle >> 4;
+    // ★タイヤの引き寄せ力（グリップ力）の計算
+    int16_t current_speed_raw = car.speed >> 8;
+    int16_t grip_power = 64; // 低速時はカチッと100%グリップ（すぐ追いつく）
+    
+    if (current_speed_raw > 10) {
+        // スピードが出ている時は、引き寄せ力を「12」にガクンと落とす！
+        // この数字を小さくするほど、お尻が外にズサササッと滑る時間が長くなります。
+        // （もしこれでも滑り足りなければ「8」や「6」に落としてみてください）
+        grip_power = 10; 
+    }
 
-    // 座標更新（car.speedは256倍、テーブルは256倍、最終的に16倍精度(>>4)にするため >>16 シフト）
-    car.x += ((int32_t)car.speed * cos_table[table_idx]) >> 16;
-    car.y += ((int32_t)car.speed * sin_table[table_idx]) >> 16;
+    // 実際の進行方向（move_angle）を、車の向き（angle）に向けて「grip_power」の歩幅で引き寄せる
+    if (angle_diff > 0) {
+        car.move_angle = (car.move_angle + grip_power) & 8191;
+        if (angle_diff < grip_power) car.move_angle = car.angle;
+    }
+    else if (angle_diff < 0) {
+        car.move_angle = (car.move_angle - grip_power) & 8191;
+        if (-angle_diff < grip_power) car.move_angle = car.angle;
+    }
+
+    // ================================================================
+    // 3. 移動計算（実際に進む方向 move_angle でテーブル引き）
+    // ================================================================
+    int16_t move_table_idx = car.move_angle >> 8; // 32方向に落とす
+
+    // speedも座標倍率も元の正常な状態を維持！
+    car.x += ((int32_t)car.speed * cos_table[move_table_idx]) >> 16;
+    car.y += ((int32_t)car.speed * sin_table[move_table_idx]) >> 16;
+
+    // ================================================================
+    // 4. スピン中の強烈な減速と復帰
+    // ================================================================
+    if (car.is_spinning) {
+        car.speed -= 128; // 強烈な路面摩擦抵抗
+        if (car.speed <= 0) {
+            car.speed = 0;
+            car.is_spinning = 0;        
+            car.move_angle = car.angle; // 完全に止まったら、進行方向を現在の車の向きにリセット
+        }
+    }
 
     // 16倍世界から通常のドット座標へ（一旦クランプなしで変換）
     map_x = car.x >> 4;

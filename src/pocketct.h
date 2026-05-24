@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define VERSION "0.1.3 (2026/05/24)"
+#define VERSION "0.1.4 (2026/05/24)"
 
 // デフォルトハイスコア
 #define DEFAULT_HI_SCORE (76500)
@@ -26,10 +26,10 @@ typedef struct {
   // --- 1. 物理演算用 ---
   int32_t x;            // 物理世界のX座標 (0 ~ 1439 の16倍精度固定小数点)
   int32_t y;            // 物理世界のY座標 (0 ~ 1023 の16倍精度固定小数点)
-  int16_t speed;        // 現在の速度 (256倍精度)
+  int16_t speed;        // 現在の速度 (0 ~ 24 の256倍精度固定小数点)
 
-  int16_t angle;        // 車の向き（0 ~ 31 の16倍精度固定小数点）
-  int16_t move_angle;   // 実際に進む向き（0 ~ 31 の16倍精度固定小数点）
+  int16_t angle;        // 車の向き（0 ~ 31 の256倍精度固定小数点）
+  int16_t move_angle;   // 実際に進む向き（0 ~ 31 の256倍精度固定小数点）
   
   int32_t current_turn; // 現在のステアリング回転力
   int16_t is_spinning;  // スピン状態フラグ
