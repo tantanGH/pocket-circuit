@@ -1,0 +1,3 @@
+[submodule "libs/libajoy"]
+	path = libs/libajoy
+	url = https://github.com/tantanGH/libajoy.git

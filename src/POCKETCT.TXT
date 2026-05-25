@@ -1,0 +1,5 @@
+POCKETCT.X - A minimum racing game for X680x0
+
+Visit the site for more details.
+
+https://github.com/tantanGH/pocket-circuit/
