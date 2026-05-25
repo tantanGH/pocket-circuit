@@ -16,8 +16,11 @@
 #include "keyboard.h"
 #include "crtc.h"
 
-// 自機カメラ
-static PLAYER_CAMERA car = { 0 };
+// 自機
+static volatile PLAYER_CAR car = { 0 };
+
+// VSYNCイベント
+static volatile VSYNC_EVENT vsync_event = { 0 };
 
 // 8x8 normal font data
 static struct iocs_fntbuf font_data_8x8[ 256 ];
@@ -25,61 +28,78 @@ static struct iocs_fntbuf font_data_8x8[ 256 ];
 // 8x8 bold font data
 static struct iocs_fntbuf font_data_8x8_bold[ 256 ];
 
-// エラーメッセージ出力用
+// アナログコントローラモードか
+static int16_t use_analog_controller = 0;
+
+// サイバースティック読み出し用バッファ
+static uint16_t ajoy_buffer[5];
+
+// エラーメッセージ出力用バッファ
 static uint8_t error_mes[ 256 ];
 
-// ハイスコア表示用
-static uint8_t hi_score_mes[ 32 ];
+// プレーヤーオブジェクト初期化
+static void init_player_car(volatile PLAYER_CAR *car, int16_t start_x, int16_t start_y, int16_t start_angle) {
 
-// スコア表示用
-static uint8_t score_mes[ 32 ];
+  // 物理演算用パラメータ初期化
+  car->x = (int32_t)start_x << 4;       // 1440x1024 解像度を16倍固定小数点で
+  car->y = (int32_t)start_y << 4;       // 1440x1024 解像度を16倍固定小数点で
 
-// ドリフトポイント表示用
-static uint8_t drift_points_mes[ 32 ];
-static uint8_t drift_points_clear_mes[] = "                 ";
+  car->speed = 0 << 8;                  // 32段階速度を256倍固定小数点で
 
-// ラップカウント表示用
-static uint8_t lap_count_mes[ 32 ];
+  car->angle = start_angle << 8;        // 32段階角度を256倍固定小数点で
+  car->move_angle = start_angle << 8;   // 32段階角度を256倍固定小数点で
 
-// ラップ表示用
-static uint8_t lap_mes_1[] = " 1ST LAP";
-static uint8_t lap_mes_2[] = " 2ND LAP";
-static uint8_t lap_mes_3[] = " 3RD LAP";
-static uint8_t lap_mes_4[] = " 4TH LAP";
-static uint8_t lap_mes_5[] = "FINAL LAP";
-static uint8_t lap_clear_mes[] = "         ";
+  car->current_turn = 0;
 
-// コース外れ警告表示用
-static uint8_t wrong_way_mes[]       = "WRONG WAY";
-static uint8_t wrong_way_clear_mes[] = "         ";
+  // 画面制御用パラメータ初期化
+  car->cam_x = start_x;
+  if (car->cam_x < CAM_X_MIN) car->cam_x = CAM_X_MIN;
+  if (car->cam_x > CAM_X_MAX) car->cam_x = CAM_X_MAX;
 
-// ゴール表示用
-static uint8_t goal_mes[]       = "GOAL!!!";
-static uint8_t goal_clear_mes[] = "       ";
+  car->cam_y = start_y;
+  if (car->cam_y < CAM_Y_MIN) car->cam_y = CAM_Y_MIN;
+  if (car->cam_y > CAM_Y_MAX) car->cam_y = CAM_Y_MAX;
 
-// VSYNCが何回走ったかを数えるカウンタ
-static volatile uint32_t vsync_counter = 0; 
+  // スプライト位置初期化
+  car->sp_x = 128;    // 256x256 画面の中央絶対座標だけどスプライト特有のオフセットは考慮せず
+  car->sp_y = 128;
 
-// ハイスコア更新依頼用
-static volatile int16_t event_refresh_hi_score = 0;
+  // スコア・ラップ
+  car->score = 0;
+  car->lap_count = 0;
+  car->next_checkpoint = 1;
+  car->last_gate = 0;
+  car->wrong_way = 0;
+  car->is_goal = 0;
+}
 
-// スコア更新依頼用
-static volatile int16_t event_refresh_score = 0;
+//
+//  VSYNCイベント初期化
+//
+static void init_vsync_event(volatile VSYNC_EVENT* vsync_event) {
 
-// ドリフトポイント表示依頼用
-static volatile int16_t event_refresh_drift_points = 0;
+  // カウンタ初期化
+  vsync_event->vsync_counter = 0;
+  vsync_event->drift_points_counter = 0;
+  vsync_event->lap_mes_counter = 0;
+  vsync_event->wrong_way_counter = 0;
+  vsync_event->goal_counter = 0;
 
-// ラップカウント表示依頼用
-static volatile int16_t event_refresh_lap_count = 0;
+  // イベントフラグ初期化
+  vsync_event->event_refresh_hi_score = 0;
+  vsync_event->event_refresh_score = 0;
+  vsync_event->event_refresh_drift_points = 0;
+  vsync_event->event_refresh_lap_count = 0;
+  vsync_event->event_refresh_lap_mes = 0;
+  vsync_event->event_refresh_wrong_way = 0;
+  vsync_event->event_refresh_goal = 0;
 
-// ラップラベル表示依頼用
-static volatile int16_t event_refresh_lap = 0;
-
-// コース外れ警告表示依頼用
-static volatile int16_t event_refresh_wrong_way = 0;
-
-// ゴール表示依頼用
-static volatile int16_t event_refresh_goal = 0;
+  // 表示メッセージ用バッファ初期化
+  vsync_event->hi_score_mes[0] = '\0';
+  vsync_event->score_mes[0] = '\0';
+  vsync_event->lap_count_mes[0] = '\0';
+  vsync_event->drift_points_mes[0] = '\0';
+}
 
 //
 //  sprintf(buf,"%0Xd",val) の置き換え用
@@ -96,25 +116,24 @@ static void int_to_ascii_right(uint8_t* buf, int16_t digits, uint32_t val) {
       buf[i] = '0' + (val % 10);
       val /= 10;
     } else {
-      // 値がもう無くなった（上位の余った桁）はスペースで埋める（右詰め演出）
+      // 値がもう無くなった（上位の余った桁）はスペースで埋める
       buf[i] = ' ';
     }
   }
 }
 
 //
-//  sprintf(buf, "+%dpt.", val) の代わりとなる超軽量化関数
-//  引数 digits : バッファ全体の文字数（末尾 '\0' は含まない、例: 8文字分なら 8）
+//  sprintf(buf, "+%dpt.", val) の置き換え用
 //
 static void int_to_drift_pt_mes(uint8_t* buf, int16_t digits, uint32_t val) {
   
-  // 1. まず全体をスペースで初期化し、最後にヌル文字を置く
+  // まず全体をスペースで初期化し、最後にヌル文字を置く
   for (int16_t i = 0; i < digits; i++) {
     buf[i] = ' ';
   }
   buf[digits] = '\0';
 
-  // 2. 文字列の組み立ては、右端（後ろ）から逆順に進める
+  // 文字列の組み立ては、右端（後ろ）から逆順に進める
   int16_t p = digits - 1;
 
   // 末尾の定数文字 "pt." を後ろからセット（pをデクリメントしながら配置）
@@ -122,7 +141,7 @@ static void int_to_drift_pt_mes(uint8_t* buf, int16_t digits, uint32_t val) {
   if (p >= 0) buf[p--] = 't';
   if (p >= 0) buf[p--] = 'p';
 
-  // 3. 数値部分を1の位から順にセット
+  // 数値部分を1の位から順にセット
   // 値が 0 になっても、最低1回は '0' を出力させる（val == 0 のとき対策）
   do {
     if (p >= 0) {
@@ -131,13 +150,10 @@ static void int_to_drift_pt_mes(uint8_t* buf, int16_t digits, uint32_t val) {
     }
   } while (val > 0 && p >= 0);
 
-  // 4. 数字のすぐ左隣に、プラス記号 '+' をセット
+  // 数字のすぐ左隣に、プラス記号 '+' をセット
   if (p >= 0) {
     buf[p--] = '+';
   }
-  
-  // 余った左側の領域は、手順1でスペースで埋まっているので
-  // 自動的に綺麗な「右詰め（例： "  +550pt."）」が完成します！
 }
 
 //
@@ -165,7 +181,7 @@ static void init_font_8x8() {
 }
 
 //
-//  put text in 8x8 font
+//  8x8 フォントでテキスト画面に文字列を出力する
 //
 static void put_text_8x8(uint16_t x, uint16_t y, uint16_t color, uint16_t bold, const uint8_t* text) {
 
@@ -201,6 +217,12 @@ static void reset_timer_a() {
 //  VSYNC割り込みハンドラ
 //
 static void __attribute__((interrupt)) refresh_screen() {
+  
+  // 基本カウンタ
+  vsync_event.vsync_counter++;
+
+
+  // 自車スプライトの表示
 
   // グラフィック座標（car.sp_x）を、スプライト座標（+16）へ変換し、
   // さらに32x32スプライトの左上基準（-16）を引く
@@ -209,9 +231,9 @@ static void __attribute__((interrupt)) refresh_screen() {
   
   // 32段階回転のどのパターンを使うか
   // 1方向ごとに4パターン使う
-  uint16_t pattern_base = 0x100 + ((car.angle >> 8) << 2);
+  uint16_t pattern_base = 0x100 + ((car.angle >> 8) << 2);    // 内部的に256倍精度なのを32段階に戻す
 
-  // 自車の表示 (スプライト0-4) ★car.sp_x/y をベースに田の字配置
+  // 自車の表示 (スプライト0-4)
   SP_SCRL[  0 ] = sp_base_x;
   SP_SCRL[  1 ] = sp_base_y;
   SP_SCRL[  2 ] = pattern_base + 0;
@@ -233,99 +255,101 @@ static void __attribute__((interrupt)) refresh_screen() {
   SP_SCRL[ 15 ] = 3;
 
 
-  // 1. 物理的な「画面左上端」を求める（中心cam_x - 画面物理幅の半分181）
+  // グラフィック画面のスクロール
+
+  // 物理的な「画面左上端」を求める（中心cam_x - 画面物理幅の半分181）
   int16_t screen_left = car.cam_x - CAM_X_MIN;
   int16_t screen_top  = car.cam_y - CAM_Y_MIN;
 
-  // 2. ハードウェアの解像度（1024x1024）へ投影（リニア変換）
+  // ハードウェアの解像度（1024x1024）へ投影（リニア変換）
   int16_t gvram_scrl_x = ((int32_t)screen_left * DISP_W) / PHYS_W;
   int16_t gvram_scrl_y = screen_top; // 縦は1:1なのでそのまま
 
-  // 3. レジスタへ反映
+  // レジスタへ反映
   GR0_SCRL[0] = gvram_scrl_x & 1023;
   GR0_SCRL[1] = gvram_scrl_y & 1023;
 
+
   // ハイスコア表示更新イベント
-  if (event_refresh_hi_score) {
-    put_text_8x8(72,0,3,1,hi_score_mes);
-    event_refresh_hi_score = 0;
+  if (vsync_event.event_refresh_hi_score) {
+    put_text_8x8(72,0,3,1,(uint8_t*)vsync_event.hi_score_mes);
+    vsync_event.event_refresh_hi_score = 0;
   }
 
   // スコア表示更新イベント
-  if (event_refresh_score) {
-    put_text_8x8(184,0,3,1,score_mes);
-    event_refresh_score = 0;
-  }
-
-  // ドリフトポイント表示イベントカウントダウン
-  if (event_refresh_drift_points) {
-    if (event_refresh_drift_points == 50 || event_refresh_drift_points == 25) {
-      put_text_8x8(96,64,3,1,drift_points_mes);
-    } else if (event_refresh_drift_points == 1) {
-      put_text_8x8(96,64,3,1,drift_points_clear_mes);      
-    }
-    event_refresh_drift_points--;
-  }
-
-  // コース外れ警告表示イベント
-  if (event_refresh_wrong_way) {
-    if (event_refresh_wrong_way == 1) {
-      put_text_8x8(96,48,3,1,wrong_way_mes);
-    }
-    if (event_refresh_wrong_way == 50) {
-      put_text_8x8(96,48,3,1,wrong_way_clear_mes);      
-      event_refresh_wrong_way = 0;
-    } else {
-      event_refresh_wrong_way++;
-    }
+  if (vsync_event.event_refresh_score) {
+    put_text_8x8(184,0,3,1,(uint8_t*)vsync_event.score_mes);
+    vsync_event.event_refresh_score = 0;
   }
 
   // ラップ表示更新イベント
-  if (event_refresh_lap_count) {
-    put_text_8x8(32,248,3,1,lap_count_mes);
-    event_refresh_lap_count = 0;
+  if (vsync_event.event_refresh_lap_count) {
+    put_text_8x8(32,248,3,1,(uint8_t*)vsync_event.lap_count_mes);
+    vsync_event.event_refresh_lap_count = 0;
   }
 
-  // ラップメッセージ表示イベント
-  if (event_refresh_lap) {
-    if (event_refresh_lap == 1) {
-      put_text_8x8(96,48,3,1,lap_mes_1);
-      event_refresh_lap = 10;
-    } else if (event_refresh_lap == 2) {
-      put_text_8x8(96,48,3,1,lap_mes_2);      
-      event_refresh_lap = 10;
-    } else if (event_refresh_lap == 3) {
-      put_text_8x8(96,48,3,1,lap_mes_3);      
-      event_refresh_lap = 10;
-    } else if (event_refresh_lap == 4) {
-      put_text_8x8(96,48,3,1,lap_mes_4);      
-      event_refresh_lap = 10;
-    } else if (event_refresh_lap == 5) {
-      put_text_8x8(96,48,3,1,lap_mes_5);      
-      event_refresh_lap = 10;
-    } 
-    if (event_refresh_lap == 60) {
-      put_text_8x8(96,48,3,1,lap_clear_mes);
-      event_refresh_lap = 0;
-    } else {
-      event_refresh_lap++;
+  // ドリフトポイント表示イベント
+  if (vsync_event.event_refresh_drift_points) {
+    put_text_8x8(96,64,3,1,(uint8_t*)vsync_event.drift_points_mes);
+    vsync_event.event_refresh_drift_points = 0;
+  }
+
+  // ドリフトポイント消去カウントダウン
+  if (vsync_event.drift_points_counter > 0) {
+    if (vsync_event.drift_points_counter == 1) {
+      put_text_8x8(96,64,3,1,"          ");      
     }
+    vsync_event.drift_points_counter--;
+  }
+
+  // コース外れ警告表示イベント
+  if (vsync_event.event_refresh_wrong_way) {
+    put_text_8x8(96,48,3,1,"WRONG WAY");
+    vsync_event.event_refresh_wrong_way = 0;
+  }
+
+  // コース外れ警告消去カウントダウン
+  if (vsync_event.wrong_way_counter > 0) {
+    if (vsync_event.wrong_way_counter == 1) {
+      put_text_8x8(96,48,3,1,"         ");
+    }
+    vsync_event.wrong_way_counter--;
+  }
+ 
+  // ラップメッセージ表示イベント
+  if (vsync_event.event_refresh_lap_mes) {
+    switch (vsync_event.event_refresh_lap_mes) {
+      case 1: put_text_8x8(96,48,3,1," 1ST LAP "); break;
+      case 2: put_text_8x8(96,48,3,1," 2ND LAP "); break;
+      case 3: put_text_8x8(96,48,3,1," 3RD LAP "); break;
+      case 4: put_text_8x8(96,48,3,1," 4TH LAP "); break;
+      case 5: put_text_8x8(96,48,3,1,"FINAL LAP"); break;
+    }
+    vsync_event.event_refresh_lap_mes = 0;
+  }
+
+  // ラップメッセージ消去カウントダウン
+  if (vsync_event.lap_mes_counter > 0) {
+    if (vsync_event.lap_mes_counter == 1) {
+      put_text_8x8(96,48,3,1,"         ");
+    }
+    vsync_event.lap_mes_counter--;
   }
 
   // ゴール表示イベント
-  if (event_refresh_goal) {
-    if (event_refresh_goal == 1) {
-      put_text_8x8(104,48,3,1,goal_mes);
-    }
-    if (event_refresh_goal == 200) {
-      put_text_8x8(104,48,3,1,goal_clear_mes);
-      event_refresh_goal = 0;
-    } else {
-      event_refresh_goal++;
-    }
+  if (vsync_event.event_refresh_goal) {
+    put_text_8x8(104,48,3,1,"GOAL!!!");
+    vsync_event.event_refresh_goal = 0;
   }
 
-  vsync_counter++;
+  // ゴール表示消去イベント
+  if (vsync_event.goal_counter > 0) {
+    if (vsync_event.goal_counter == 1) {
+      put_text_8x8(104,48,3,1,"       ");
+    }
+    vsync_event.goal_counter--;
+  }
+
 }
 
 //
@@ -386,15 +410,15 @@ static void init_t_palette() {
 }
 
 //
-// ファイルをメモリに丸ごとロード
+//  ファイルをメモリに丸ごとロード
 //
 static uint8_t* load_file(const char* filename, uint32_t size) {
   FILE* fp = fopen(filename, "rb");
-  if (!fp) {
+  if (fp == NULL) {
     return NULL;
   }
   uint8_t* buf = (uint8_t*)malloc(size);
-  if (buf) {
+  if (buf != NULL) {
     size_t read_len = 0;
     do {
       size_t len = fread(buf + read_len, 1, size - read_len, fp);
@@ -406,18 +430,19 @@ static uint8_t* load_file(const char* filename, uint32_t size) {
   return buf;
 }
 
+// グラフィック画面OFF
 static void graphic_off() {
-  // グラフィック画面OFF
   *VDC_R2 &= 0xffe0;    
 }
 
+// グラフィック画面ON
 static void graphic_on() {
   // SP:ON TX:ON GS4:ON(1024x1024)
   *VDC_R2 |= 0x70; 
 }
 
 //
-// 1024x1024の4bitパック(512KB)を、GVRAM(16bit/1dot)へ64bit(32bit*2)単位で一気に展開
+//  1024x1024の4bitパック(512KB)を、GVRAM(16bit/1dot)へ64bit(32bit*2)単位で展開
 //
 static void deploy_graphics(const uint8_t* packed_grp) {
 
@@ -434,48 +459,14 @@ static void deploy_graphics(const uint8_t* packed_grp) {
     uint32_t g1 = ((packed & 0xF000) <<  4) | ((packed & 0x0F00) >> 8); // ドット0,1
     uint32_t g2 = ((packed & 0x00F0) << 12) | ((packed & 0x000F));      // ドット2,3
         
-    *dest++ = g1; // 32bitバスへ一発書き込み（2ドット分）
-    *dest++ = g2; // 32bitバスへ一発書き込み（2ドット分）
+    *dest++ = g1; // 2ドット分書き込み
+    *dest++ = g2; // 2ドット分書き込み
   }
 
 }
 
-// プレーヤーオブジェクト初期化
-static void player_camera_init(PLAYER_CAMERA *car, int16_t start_x, int16_t start_y, int16_t start_angle) {
-
-  // --- 物理演算用パラメータ初期化 ---
-  car->x = (int32_t)start_x << 4;
-  car->y = (int32_t)start_y << 4;
-  car->speed = 0;
-
-  car->angle = start_angle << 4;
-  car->move_angle = start_angle << 4;
-
-  car->current_turn = 0;
-
-  // --- 画面制御用パラメータ初期化 ---
-  car->cam_x = start_x;
-  if (car->cam_x < CAM_X_MIN) car->cam_x = CAM_X_MIN;
-  if (car->cam_x > CAM_X_MAX) car->cam_x = CAM_X_MAX;
-
-  car->cam_y = start_y;
-  if (car->cam_y < CAM_Y_MIN) car->cam_y = CAM_Y_MIN;
-  if (car->cam_y > CAM_Y_MAX) car->cam_y = CAM_Y_MAX;
-
-  // スプライト位置初期化
-  car->sp_x = 128;
-  car->sp_y = 128;
-
-  // スコア・ラップ
-  car->score = 0;
-  car->lap_count = 0;
-  car->next_checkpoint = 1;
-  car->last_gate = 0;
-  car->wrong_way = 0;
-}
-
 //
-//  テキストラベル初期化
+//  テキストラベル表示
 //
 static void init_text_labels() {
   put_text_8x8(8,0,2,1,"HI SCORE");
@@ -484,35 +475,11 @@ static void init_text_labels() {
 }
 
 //
-//  ハイスコア表示
-//
-static void put_hi_score(uint32_t hi_score) {
-  int_to_ascii_right(hi_score_mes,8,hi_score);
-  event_refresh_hi_score = 1;
-}
-
-//
-//  スコア表示
-//
-static void put_score(uint32_t score) {
-  int_to_ascii_right(score_mes,8,score);
-  event_refresh_score = 1;
-}
-
-//
-//  ラップカウント表示
-//
-static void put_lap_count(uint32_t lap_count) {
-  int_to_ascii_right(lap_count_mes,3,lap_count);
-  event_refresh_lap_count = 1;
-}
-
-//
 //  ゲーム開始待機画面
 //
 static int16_t wait_game_start() {
 
-  put_text_8x8(64,48,3,1,"PUSH SPACE KEY ");
+  put_text_8x8(64,48,3,1,"PUSH ANY BUTTON");
 
   for (;;) {
     if (_iocs_b_keysns() != 0) {
@@ -523,7 +490,14 @@ static int16_t wait_game_start() {
         return -1;
       }
     }
-    //if ((_iocs_joyget(0) & 0x20) == 0) break;
+    if (use_analog_controller) {
+      ajoy_read(ajoy_buffer);
+      if (ajoy_buffer[4] & 0x0c32) {   // A,B,C,D,STARTのいずれかが押された
+        break;
+      }
+    } else {
+      if ((_iocs_joyget(0) & 0x20) == 0) break;
+    }
   }
 
   put_text_8x8(64,48,3,1,"               ");
@@ -547,7 +521,14 @@ static int16_t wait_game_over() {
         return -1;
       }
     }
-    //if ((_iocs_joyget(0) & 0x20) == 0) break;
+    if (use_analog_controller) {
+      ajoy_read(ajoy_buffer);
+      if (ajoy_buffer[4] & 0x0c32) {   // A,B,C,D,STARTのいずれかが押された
+        break;
+      }
+    } else {
+      if ((_iocs_joyget(0) & 0x20) == 0) break;
+    }
   }
 
   //put_text_8x8(64,48,3,1,"         ");
@@ -573,9 +554,10 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   error_mes[0] = '\0';
 
   // AJOY.X常駐チェック
-  if (!ajoy_isavailable()) {
-    strcpy(error_mes, "AJOY.Xが常駐していません。");
-    goto exit;
+  if (ajoy_isavailable()) {
+//    strcpy(error_mes, "AJOY.Xが常駐していません。");
+//    goto exit;
+    use_analog_controller = 1;
   }
 
   // random seed初期化
@@ -625,9 +607,16 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   // NOW LOADING
   put_text_8x8(0,0,2,1,"POCKET CIRCUIT PRO-68K");
   usleep(200000);
-  put_text_8x8(0,16,3,1," - DETECTED AJOY.X");
-  usleep(200000);
-  put_text_8x8(0,32,3,1," - LOADING COURSE DATA ...");
+  if (use_analog_controller) {
+    put_text_8x8(0,16,3,1," - AJOY.X WAS FOUND.");
+    put_text_8x8(0,32,3,1," - USE AN ANALOG CONTROLLER.");
+    usleep(200000);
+  } else {
+    put_text_8x8(0,16,3,1," - AJOY.X WAS NOT FOUND.");
+    put_text_8x8(0,32,3,1," - USE A DIGITAL CONTROLLER.");
+    usleep(200000);    
+  }
+  put_text_8x8(0,48,3,1," - LOADING COURSE DATA ...");
 
   // コース物理データのロード
   course_data = load_file(COURSE_PHYS_DATA_FILE, PHYS_W * PHYS_H);
@@ -649,27 +638,18 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   deploy_graphics(grp_data);
   free(grp_data); // 表示用の一時バッファは用済みなので解放
   grp_data = NULL;
-  put_text_8x8(0,48,3,1," - DONE");
+  put_text_8x8(0,64,3,1," - DONE");
   usleep(1000000);
 
   // テキストクリア
   _dos_c_cls_al();
   graphic_on();
 
-  // サイバースティック読み出し用バッファ
-  uint16_t ajoy_buffer[5];
-
   // ゲームループ
 game_start:
 
-  // グローバル変数初期化
-  vsync_counter = 0;
-  event_refresh_hi_score = 0;
-  event_refresh_score = 0;
-  event_refresh_drift_points = 0;
-  event_refresh_lap_count = 0;
-  event_refresh_wrong_way = 0;
-  event_refresh_goal = 0;
+  // VSYNCイベントステータス初期化
+  init_vsync_event(&vsync_event);
 
   // ドリフトポイント初期化
   uint16_t drift_combo = 0;           // 現在の連続ドリフトフレーム数（コンボ）
@@ -679,7 +659,7 @@ game_start:
   uint16_t s_x     = *(uint16_t*)(course_data + 4);
   uint16_t s_y     = *(uint16_t*)(course_data + 6);
   uint16_t s_angle = *(uint16_t*)(course_data + 8);
-  player_camera_init(&car, s_x, s_y, s_angle);
+  init_player_car(&car, s_x, s_y, s_angle);
 
   // テキストクリア
   _dos_c_cls_al();
@@ -687,15 +667,18 @@ game_start:
   // テキストラベル初期化
   init_text_labels();
 
-  // スコア・ラップ表示
-  put_hi_score(hi_score);
-  put_score(car.score);
-  //put_lap_count(car.lap_count);
+  // ハイスコア表示
+  int_to_ascii_right((uint8_t*)vsync_event.hi_score_mes,8,hi_score);
+  vsync_event.event_refresh_hi_score = 1;
+
+  // スコア初期化・表示
+  uint32_t score = 0;
+  int_to_ascii_right((uint8_t*)vsync_event.score_mes,8,score);
+  vsync_event.event_refresh_score = 1;
 
   // ゲームオーバー判定フラグ
   int16_t game_over = 0;
-  int16_t is_goal = 0;
-  
+
   // VSYNC割り込み開始
   if (_iocs_vdispst((uint8_t*)refresh_screen, 0, 1) != 0) {
     strcpy(error_mes, "VSYNC割り込みが使用中です。");
@@ -716,10 +699,10 @@ game_start:
   while (!game_over) {
 
     // 現在のVSYNC数
-    uint32_t current_vsync = vsync_counter;
+    uint32_t current_vsync = vsync_event.vsync_counter;
 
     // ESCキーが押されたら終了 (8フレームごとのチェック)
-    if ((current_vsync & 7) == 0 && _iocs_b_keysns() != 0) {
+    if (!(current_vsync & 7) && _iocs_b_keysns() != 0) {
       int16_t scan_code = _iocs_b_keyinp() >> 8;
       if (scan_code == KEY_SCAN_CODE_ESC) {
         goto exit;
@@ -727,7 +710,7 @@ game_start:
     }
   
     // 既にゴール済みなら車体を右へ動かす
-    if (is_goal) {
+    if (car.is_goal) {
       car.sp_x += 4;
       //printf("%d\n",car.sp_x);
       if (car.sp_x > 256 + 32) {
@@ -746,44 +729,53 @@ game_start:
     uint32_t map_index = ((uint32_t)map_y * 1440) + map_x;
     uint8_t surface_attr = physical_map[map_index] & 7;
 
-    int16_t speed_limit = 32 << 8; // デフォルトの道路上での最高速度（上限を48から下げた値）
+//    int16_t speed_limit = 22 << 8;
+    int16_t speed_limit = MAX_SPEED << 8; // デフォルトの道路上での最高速度
 
     if (surface_attr == 6) {
-        // グラベル（砂利）なら、強制的に最高速を「6」に制限！
-        speed_limit = 6 << 8; 
-    } 
-    else if (surface_attr == 3) {
-        // 道路なら制限なし（22のまま）
-        speed_limit = 22 << 8;
+        // グラベル（砂利）
+//        speed_limit = 6 << 8; 
+        speed_limit = 24 << 8; 
     } 
     else if (surface_attr == 4 || surface_attr == 5) {
         // 縁石なら少し制限
-        speed_limit = 16 << 8;
+//        speed_limit = 16 << 8;
+        speed_limit = 64 << 8;
     } 
-    else {
-        // 芝生なら、最高速を「8」程度に制限
-        speed_limit = 8 << 8;
+    else if (surface_attr == 0 || surface_attr == 1) {
+        // 芝生
+//        speed_limit = 8 << 8;
+        speed_limit = 32 << 8;
     }
 
     // ----------------------------------------------------------------
-    // 2. アナログコントローラの入力を「目標速度」として取得
+    // 2. コントローラの入力を「目標速度」として取得
     // ----------------------------------------------------------------
-    ajoy_read(ajoy_buffer);
+    int16_t throttle_raw;
+    int16_t lever_raw;
 
     // スロットル生データ(0-255)取得
-    int16_t throttle_raw = ajoy_buffer[2];
+    if (use_analog_controller) {
+      // アナログコントローラ
+      ajoy_read(ajoy_buffer);
+      throttle_raw = ajoy_buffer[2];
+      lever_raw = ajoy_buffer[1] - 128;
+    } else {
+      // デジタルジョイパッド
+      uint8_t j = *((volatile uint8_t*)(0x0e9a001));
+      throttle_raw = (!(j & 0x20)) ? 255 : 0;
+      lever_raw = (!(j & 4)) ? -(MAX_SPEED) : (!(j & 8)) ? MAX_SPEED : 0;
+    }
     
-    // 128 + 遊び30 = 158 以上のとき、手前に引かれている（アクセルON）と判定
+    // 255 - MAX_SPEED 以上のとき、手前に引かれている（アクセルON）と判定
     int16_t accel_amount = 0;
-    if (throttle_raw >= 158) {
-        accel_amount = throttle_raw - 158; // 引くほど値が大きくなる（0 〜 97）
+    if (throttle_raw >= (255 - MAX_SPEED)) {
+        accel_amount = throttle_raw - (255 - MAX_SPEED); // 引くほど値が大きくなる（0 〜 MAX_SPEED）
     }
 
-//    int16_t target_speed = accel_amount * (32 << 8) / 97; 
-//    int16_t target_speed = accel_amount * (24 << 8) / 97; 
-    int16_t target_speed = accel_amount * (22 << 8) / 97; 
+    int16_t target_speed = accel_amount << 8;     // 共通レンジにつき剰余省略
+//    int16_t target_speed = accel_amount * (22 << 8) / 97; 
 
-    // もしアナログコントローラの最大値が48などの場合は、ここで路面制限に合わせます
     if (target_speed > speed_limit) {
         target_speed = speed_limit; // コントローラ全開でも、路面リミッターで頭打ちにする
     }
@@ -798,8 +790,21 @@ game_start:
         // 【加速中】：差分が大きければグッと加速し、目標に近づくほど緩やかになる
         // シフト演算（>> 4）で「差分の1/16」ずつ近づける。
         // 最低でも「1」は加速させるために +1 などの底上げを挟むと滑らかです。
-        car.speed += (speed_diff >> 4) + 1;
+//        car.speed += (speed_diff >> 4) + 1;
+//        car.speed += (speed_diff >> 3) + 1;
+
+        int16_t torque = (speed_diff >> 3); // 基本は差分比例（これだけだとオフロードで亀になる）
         
+        // 車の速度が極端に遅い（例：整数部で 16 未満）ときは、
+        // スタック防止用に最低保証トルク（整数部1＝256）を上乗せする
+        if (car.speed < (16 << 8)) {
+            torque += (1 << 8); // ここの数値を 1 や 2 にしてオフロードの脱出感を調整
+        } else {
+            torque += 1;        // 通常域は最低でも「+1」して確実に目標速度へ近づける
+        }
+
+        car.speed += torque;
+
         // 行き過ぎ防止
         if (car.speed > target_speed) car.speed = target_speed;
     } 
@@ -807,31 +812,39 @@ game_start:
         // 【減速中】：グラベル突入やアクセルOFF時
         // 減速を少し強め（例：差分の1/8ずつ戻す）にしたい場合は >> 3 にします。
         // 逆にすーっと滑らかに転がしたい場合は >> 4 のままにします。
-        car.speed += (speed_diff >> 6) - 1; // 負の数なので加算して、最低でも-1
-        
+//        car.speed += (speed_diff >> 6) - 1; // 負の数なので加算して、最低でも-1
+//        car.speed += (speed_diff >> 4) - 1; // 負の数なので加算して、最低でも-1        
+        car.speed += (speed_diff >> 5) - 4; // 負の数なので少し弱めに引き戻す（最低でも-4）
+
         // 行き過ぎ防止
         if (car.speed < target_speed) car.speed = target_speed;
     }
-
-    // ================================================================
+// ================================================================
     // 1. 車の向き（angle：0〜8191）の更新
     // ================================================================
-    int16_t ax = ajoy_buffer[1] - 128;
     int32_t target_turn = 0;
     
-    if (ax < -15 || ax > 15) {
+    if (lever_raw < -15 || lever_raw > 15) {
         // ハンドルを切ると、車の向き（angle）がクイッとインを向く
-        target_turn = (int32_t)ax * (int32_t)(car.speed >> 8);
+        target_turn = (int32_t)lever_raw * (int32_t)(car.speed >> 8);
     }
     
-    // ステアリング慣性
-    car.current_turn += (target_turn - car.current_turn) / 8;
+    // ⚡【高速化】「/ 8」という重い割り算を「>> 3」の超高速シフトに変更（XVI実機への優しさ）
+    car.current_turn += (target_turn - car.current_turn) >> 3;
 
     if (car.current_turn < -10 || car.current_turn > 10) {
-        car.angle += (int16_t)(car.current_turn / 90); 
+        // 🌟【ハンドリングのメインボリューム】
+        // 以前の「/ 90」から分母を大きくして、切れ角をマイルド（弱アンダー方向）にします。
+        // 68000にとって割り算は激重なので、ここもきれいなシフト演算（>>）に置き換えます。
+        //
+        // ・「>> 7」（128で割る相当）：マイルドになり、オーバーステアが綺麗に収まるはずです（まずはここから！）
+        // ・これでもまだ曲がりすぎるなら ➡ 「>> 8」（256で割る）にしてさらに重くする
+        // ・逆にハンドルが重くて曲がらなすぎたら ➡ 「>> 6」（64で割る）にしてクイックにする
+        
+        car.angle += (int16_t)(car.current_turn >> 7); 
         car.angle = (car.angle + 8192) & 8191; 
     }
-
+    
     // ================================================================
     // 2. 【核心】進む向き（move_angle）の遅れ（ヨー・ドリフト）計算
     // ================================================================
@@ -843,18 +856,25 @@ game_start:
 
     // ★タイヤの引き寄せ力（グリップ力）の計算
     int16_t current_speed_raw = car.speed >> 8;
-    int16_t grip_power = 64; // 低速時はカチッと100%グリップ（すぐ追いつく）
     
-    if (current_speed_raw > 10) {
-        // スピードが出ている時は、引き寄せ力を「12」にガクンと落とす！
-        // この数字を小さくするほど、お尻が外にズサササッと滑る時間が長くなります。
-        // （もしこれでも滑り足りなければ「8」や「6」に落としてみてください）
-        grip_power = 10; 
+    // 低速時は完全にカチッとグリップさせる
+    // 以前の 64 から 4倍の 256 へ。これなら角度差が一瞬で埋まります。
+    int16_t grip_power = 256; 
+    
+    // 滑り出す速度の境界線（閾値）も、最高速90の世界に合わせて引き上げる（例：30〜40キロあたりから滑り出す）
+    if (current_speed_raw > 35) {
+        // 🌟 高速時の引き寄せ力（グリップ力）
+        // 以前の「10」の4倍だと「40」になります。
+        // まずは「40」を基準にして走ってみてください。
+        // ・これでもまだツルツル滑りすぎる場合 ➡ 「50」や「60」に上げてグリップを強くする
+        // ・逆に向きがすぐ戻ってドリフト感が物足りない場合 ➡ 「30」や「25」に下げて滑らせる
+        grip_power = 40; 
     }
 
     // 実際の進行方向（move_angle）を、車の向き（angle）に向けて「grip_power」の歩幅で引き寄せる
     if (angle_diff > 0) {
         car.move_angle = (car.move_angle + grip_power) & 8191;
+        // 行き過ぎ防止の条件も、新しい grip_power の値と比較するように統一
         if (angle_diff < grip_power) car.move_angle = car.angle;
     }
     else if (angle_diff < 0) {
@@ -951,24 +971,26 @@ game_start:
                 }
                 
                 // 獲得メッセージを作って、トータルスコアに加算
-                int_to_drift_pt_mes(drift_points_mes, 8, current_drift_points);
-                event_refresh_drift_points = 50; 
+                int_to_drift_pt_mes((uint8_t*)vsync_event.drift_points_mes, 8, current_drift_points);
+                vsync_event.event_refresh_drift_points = 1;
+                vsync_event.drift_points_counter = 50; 
                 
                 car.score += current_drift_points;
-                int_to_ascii_right(score_mes, 8, car.score);                
-                event_refresh_score = 1;
+                int_to_ascii_right((uint8_t*)vsync_event.score_mes, 8, car.score);                
+                vsync_event.event_refresh_score = 1;
 
                 if (car.score > hi_score) {
                   hi_score = car.score;
-                  strcpy(hi_score_mes, score_mes);
-                  event_refresh_hi_score = 1;
+                  strcpy((uint8_t*)vsync_event.hi_score_mes, (uint8_t*)vsync_event.score_mes);
+                  vsync_event.event_refresh_hi_score = 1;
                 }
 
             } else {
                 // ★失敗！芝生や砂利にハミ出して終了した場合は「無効（0点）」
                 // メッセージを "   +0pt." にするか、あるいは " FAILED " などの文字列にしても面白いです
-                int_to_drift_pt_mes(drift_points_mes, 8, 0); 
-                event_refresh_drift_points = 25; 
+                int_to_drift_pt_mes((uint8_t*)vsync_event.drift_points_mes, 8, 0); 
+                vsync_event.event_refresh_drift_points = 1;
+                vsync_event.drift_points_counter = 25; 
                 // ※トータルスコア（score）への加算はスキップ！
             }
 
@@ -999,28 +1021,31 @@ game_start:
                     // ゲーム開始直後の最初の通過
                     car.lap_count = 1;      // 表示は「LAP 1」に！
                     car.next_checkpoint = 2; // 次はゲート2を目指す
-                    int_to_ascii_right(lap_count_mes, 4, car.lap_count);   
-                    event_refresh_lap_count = 1;
-                    event_refresh_lap = 1;
+                    int_to_ascii_right((uint8_t*)vsync_event.lap_count_mes, 4, car.lap_count);   
+                    vsync_event.event_refresh_lap_count = 1;
+                    vsync_event.event_refresh_lap_mes = 1;
+                    vsync_event.lap_mes_counter = 50;
                 } 
                 else if (car.lap_count >= 5) {
                     // ★5周完了状態で再びスタートラインを踏んだ ＝ ゴール！！
                     //game_over = 1;
                     //is_goal_sequense = 1;   // ゴール演出（操作をAIに任せて車速を絞るなど）へ
                     // ここで最終スコアが完全にロック（確定）されます
-                    is_goal = 1;
-                    event_refresh_goal = 1;
                     car.angle = 0;
                     car.move_angle = 0;
+                    car.is_goal = 1;
+                    vsync_event.event_refresh_goal = 1;
+                    vsync_event.goal_counter = 200;
                 } 
                 else {
                     // 2, 3, 4, 5周目の通過
                     car.lap_count++;         // LAP 2, 3, 4, 5 へ進む
                     car.next_checkpoint = 2; // 次はゲート2へ
                     // TODO: 「LAP CLEAR!」などの文字を作ってVSYNCへ
-                    int_to_ascii_right(lap_count_mes, 4, car.lap_count);   
-                    event_refresh_lap_count = 1;
-                    event_refresh_lap = car.lap_count;
+                    int_to_ascii_right((uint8_t*)vsync_event.lap_count_mes, 4, car.lap_count);   
+                    vsync_event.event_refresh_lap_count = 1;
+                    vsync_event.event_refresh_lap_mes = car.lap_count;
+                    vsync_event.lap_mes_counter = 50;
                 }
             } 
             else if (car.next_checkpoint == 4) {
@@ -1038,7 +1063,8 @@ game_start:
                   current_drift_points = 0;
                   drift_combo = 0;
               }
-              event_refresh_wrong_way = 1;
+              vsync_event.event_refresh_wrong_way = 1;
+              vsync_event.wrong_way_counter = 50;
               car.wrong_way = 1;
               // さらに厳しくするなら：
               // 一瞬（例えば1秒間）だけ強制的に最高速度制限（speed_limit）をグラベル以下（4<<8など）に落として、
@@ -1051,9 +1077,11 @@ game_start:
       }
 
       // 追い越しガード
-    //while (vsync_counter == current_vsync) {
-    //}
-    WAIT_VBLANK;
+    while (vsync_event.vsync_counter == current_vsync) {
+      uint8_t opm_status = *(volatile uint8_t*)(0xe90003);
+    }
+    //WAIT_VBLANK;
+    //if (!(vsync_event.vsync_counter & 7)) printf("%d %d\n",vsync_event.vsync_counter,current_vsync);
     
   } // ゲームメインループここまで
 

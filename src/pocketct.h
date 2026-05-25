@@ -25,6 +25,9 @@
 #define COURSE_PHYS_DATA_FILE  "course1.dat"
 #define COURSE_DISP_DATA_FILE  "course1.grp"
 
+// 最高速度
+#define MAX_SPEED (90)
+
 typedef struct {
 
   // --- 1. 物理演算用 ---
@@ -49,7 +52,34 @@ typedef struct {
   int16_t next_checkpoint;  // 次に通過すべきチェックポイント番号（0〜3）
   int16_t last_gate;        // 最後に通ったチェックポイント
   int16_t wrong_way;        // 今道を外れているか
+  int16_t is_goal;          // すでにゴールラインに到達しているか
 
-} PLAYER_CAMERA;
+} PLAYER_CAR;
+
+typedef struct {
+
+  // カウンタ
+  uint32_t vsync_counter;               // VSYNCが何回走ったかを数える基本カウンタ
+  uint32_t drift_points_counter;        // ドリフトポイント表示カウントダウン用
+  uint32_t lap_mes_counter;             // ラップメッセージ表示カウントダウン用
+  uint32_t wrong_way_counter;           // コース外れ警告表示カウントダウン用
+  uint32_t goal_counter;                // ゴール表示カウントダウン用
+
+  // イベント通知
+  int16_t event_refresh_hi_score;       // ハイスコア更新依頼用
+  int16_t event_refresh_score;          // スコア更新依頼用
+  int16_t event_refresh_lap_count;      // ラップカウント表示依頼用
+  int16_t event_refresh_lap_mes;        // ラップメッセージ表示依頼用(1-5でラップ数相当)
+  int16_t event_refresh_drift_points;   // ドリフトポイント表示依頼用
+  int16_t event_refresh_wrong_way;      // コース外れ警告表示依頼用
+  int16_t event_refresh_goal;           // ゴール表示依頼用
+
+  // バッファ
+  uint8_t hi_score_mes[ 32 ];           // ハイスコア表示用
+  uint8_t score_mes[ 32 ];              // スコア表示用
+  uint8_t drift_points_mes[ 32 ];       // ドリフトポイント表示用
+  uint8_t lap_count_mes[ 32 ];          // ラップカウント表示用
+
+} VSYNC_EVENT;
 
 #endif
