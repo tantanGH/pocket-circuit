@@ -71,6 +71,12 @@ static void init_player_car(volatile PLAYER_CAR *car, int16_t start_x, int16_t s
   car->last_gate = 0;
   car->wrong_way = 0;
   car->is_goal = 0;
+
+  for (int16_t i = 0; i < 6; i++) {
+    car->lap_times[i] = 0;
+    car->lap_scores[i] = 0;
+  }
+
 }
 
 //
@@ -217,10 +223,6 @@ static void reset_timer_a() {
 //  VSYNC割り込みハンドラ
 //
 static void __attribute__((interrupt)) refresh_screen() {
-  
-  // 基本カウンタ
-  vsync_event.vsync_counter++;
-
 
   // 自車スプライトの表示
 
@@ -231,7 +233,7 @@ static void __attribute__((interrupt)) refresh_screen() {
   
   // 32段階回転のどのパターンを使うか
   // 1方向ごとに4パターン使う
-  uint16_t pattern_base = 0x100 + ((car.angle >> 8) << 2);    // 内部的に256倍精度なのを32段階に戻す
+  uint16_t pattern_base = 0x100 + ((car.angle >> 8) << 2);    // 内部的に256倍精度なのを32段階に戻してから4倍
 
   // 自車の表示 (スプライト0-4)
   SP_SCRL[  0 ] = sp_base_x;
@@ -349,7 +351,9 @@ static void __attribute__((interrupt)) refresh_screen() {
     }
     vsync_event.goal_counter--;
   }
-
+  
+  // 基本カウンタ
+  vsync_event.vsync_counter++;
 }
 
 //
@@ -455,7 +459,7 @@ static void deploy_graphics(const uint8_t* packed_grp) {
 
     uint16_t packed = *src++; // 4ドット分(16bit)読み込み
         
-    // 64bit展開テーブル、またはシフト演算で16bit VRAMデータ×2（32bit×2）を作る
+    // シフト演算で16bit GVRAMデータ×2（32bit×2）を作る
     uint32_t g1 = ((packed & 0xF000) <<  4) | ((packed & 0x0F00) >> 8); // ドット0,1
     uint32_t g2 = ((packed & 0x00F0) << 12) | ((packed & 0x000F));      // ドット2,3
         
@@ -463,6 +467,25 @@ static void deploy_graphics(const uint8_t* packed_grp) {
     *dest++ = g2; // 2ドット分書き込み
   }
 
+}
+
+//
+//  NOW LOADING の表示
+//
+static void put_loading_messages() {
+  put_text_8x8(0,0,1,1,"POCKET CIRCUIT PRO-68K");
+  put_text_8x8(0,16,1,1,"VERSION "VERSION);
+  usleep(200000);
+  if (use_analog_controller) {
+    put_text_8x8(0,32,3,1," - AJOY.X WAS FOUND.");
+    put_text_8x8(0,48,3,1," - USE AN ANALOG CONTROLLER.");
+    usleep(200000);
+  } else {
+    put_text_8x8(0,32,3,1," - AJOY.X WAS NOT FOUND.");
+    put_text_8x8(0,48,3,1," - USE A DIGITAL CONTROLLER.");
+    usleep(200000);    
+  }
+  put_text_8x8(0,64,3,1," - LOADING COURSE DATA ...");
 }
 
 //
@@ -475,7 +498,7 @@ static void init_text_labels() {
 }
 
 //
-//  ゲーム開始待機画面
+//  ゲーム開始待機画面 (未使用)
 //
 static int16_t wait_game_start() {
 
@@ -492,11 +515,11 @@ static int16_t wait_game_start() {
     }
     if (use_analog_controller) {
       ajoy_read(ajoy_buffer);
-      if (ajoy_buffer[4] & 0x0c32) {   // A,B,C,D,STARTのいずれかが押された
+      if ((ajoy_buffer[4] & 0xfff) != 0x0fff) {
         break;
       }
     } else {
-      if ((_iocs_joyget(0) & 0x20) == 0) break;
+      if ((_iocs_joyget(0) & 0x60) != 0x60) break;
     }
   }
 
@@ -506,12 +529,41 @@ static int16_t wait_game_start() {
 }
 
 //
-//  ゲームオーバー待機画面
+//  ゲームオーバー待機画面(リザルト表示)
 //
 static int16_t wait_game_over() {
-  
-  //put_text_8x8(64,48,3,1,"GAME OVER");
-  
+
+  // グラフィックOFF
+  graphic_off();
+
+  // テキスト画面クリア
+  _dos_c_cls_al();
+
+  put_text_8x8(80,8,2,1,"- RESULT - ");
+
+  static uint8_t mes[256];
+  uint32_t total_lap_time = 0;
+  uint32_t total_score = 0;
+  for (int16_t i = 1; i <= 5; i++) {
+    uint32_t lap_time = (car.lap_times[i] - car.lap_times[i - 1]) * 1000000 / 55458;
+    uint32_t lap_score = car.lap_scores[i];
+    total_lap_time += lap_time;
+    total_score += lap_score;
+    usleep(500000);
+    sprintf(mes,"LAP%d '%02d:%02d.%03d +%dpt.",
+              i, lap_time / 60000, (lap_time % 60000) / 1000, lap_time % 1000, lap_score);
+    put_text_8x8(32,16 + i * 24,3,1,mes);
+  }
+
+  usleep(500000);
+  sprintf(mes,"TOTAL '%02d:%02d.%03d +%dpt.",
+            total_lap_time / 60000, (total_lap_time % 60000) / 1000, total_lap_time % 1000, total_score);
+  put_text_8x8(24,168,1,1,mes);
+
+  usleep(500000);
+  put_text_8x8(64,200,3,1,"PUSH ANY BUTTON");
+
+  // 入力待ち
   for (;;) {
     if (_iocs_b_keysns() != 0) {
       int16_t scan_code = _iocs_b_keyinp() >> 8;
@@ -523,15 +575,13 @@ static int16_t wait_game_over() {
     }
     if (use_analog_controller) {
       ajoy_read(ajoy_buffer);
-      if (ajoy_buffer[4] & 0x0c32) {   // A,B,C,D,STARTのいずれかが押された
+      if ((ajoy_buffer[4] & 0xfff) != 0x0fff) {
         break;
       }
     } else {
-      if ((_iocs_joyget(0) & 0x20) == 0) break;
+      if ((_iocs_joyget(0) & 0x60) != 0x60) break;
     }
   }
-
-  //put_text_8x8(64,48,3,1,"         ");
 
   return 0;
 }
@@ -547,7 +597,7 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   // ユーザースタックポインタ保存用
   int32_t usp = -1;
 
-  // VSYNC割り込み使用開始したかフラグ
+  // VSYNC割り込み使用開始したよフラグ
   int16_t vsync = 0;
 
   // エラーメッセージ初期化
@@ -555,8 +605,6 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
 
   // AJOY.X常駐チェック
   if (ajoy_isavailable()) {
-//    strcpy(error_mes, "AJOY.Xが常駐していません。");
-//    goto exit;
     use_analog_controller = 1;
   }
 
@@ -605,23 +653,12 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   uint8_t* grp_data = NULL;
 
   // NOW LOADING
-  put_text_8x8(0,0,2,1,"POCKET CIRCUIT PRO-68K");
-  usleep(200000);
-  if (use_analog_controller) {
-    put_text_8x8(0,16,3,1," - AJOY.X WAS FOUND.");
-    put_text_8x8(0,32,3,1," - USE AN ANALOG CONTROLLER.");
-    usleep(200000);
-  } else {
-    put_text_8x8(0,16,3,1," - AJOY.X WAS NOT FOUND.");
-    put_text_8x8(0,32,3,1," - USE A DIGITAL CONTROLLER.");
-    usleep(200000);    
-  }
-  put_text_8x8(0,48,3,1," - LOADING COURSE DATA ...");
+  put_loading_messages();
 
   // コース物理データのロード
   course_data = load_file(COURSE_PHYS_DATA_FILE, PHYS_W * PHYS_H);
   if (course_data == NULL) {
-    strcpy(error_mes, "コースデータ(.dat)の読み込みに失敗しました。");
+    strcpy(error_mes, "コースデータ(.DAT)の読み込みに失敗しました。");
     goto exit;
   }
   physical_map = course_data + 32;    // 専用32バイトはヘッダ それ以降に物理マップデータ(1440x1024)
@@ -629,24 +666,24 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   // コースグラフィックデータのロード
   grp_data = load_file(COURSE_DISP_DATA_FILE, DISP_W * (DISP_W / 2));
   if (grp_data == NULL) {
-    strcpy(error_mes, "コースグラフィックデータ(.grp)の読み込みに失敗しました。");
+    strcpy(error_mes, "コースグラフィックデータ(.GRP)の読み込みに失敗しました。");
     goto exit;
   }
     
-  // グラフィックをGVRAMに展開
+  // コースグラフィックデータをGVRAMに展開
   graphic_off();
   deploy_graphics(grp_data);
   free(grp_data); // 表示用の一時バッファは用済みなので解放
   grp_data = NULL;
-  put_text_8x8(0,64,3,1," - DONE");
-  usleep(1000000);
-
-  // テキストクリア
-  _dos_c_cls_al();
-  graphic_on();
 
   // ゲームループ
 game_start:
+
+  // テキストクリア
+  _dos_c_cls_al();
+
+  // グラフィックON
+  graphic_on();
 
   // VSYNCイベントステータス初期化
   init_vsync_event(&vsync_event);
@@ -661,17 +698,14 @@ game_start:
   uint16_t s_angle = *(uint16_t*)(course_data + 8);
   init_player_car(&car, s_x, s_y, s_angle);
 
-  // テキストクリア
-  _dos_c_cls_al();
-
   // テキストラベル初期化
   init_text_labels();
 
-  // ハイスコア表示
+  // ハイスコア設定と表示依頼
   int_to_ascii_right((uint8_t*)vsync_event.hi_score_mes,8,hi_score);
   vsync_event.event_refresh_hi_score = 1;
 
-  // スコア初期化・表示
+  // スコア初期化と表示依頼
   uint32_t score = 0;
   int_to_ascii_right((uint8_t*)vsync_event.score_mes,8,score);
   vsync_event.event_refresh_score = 1;
@@ -690,15 +724,15 @@ game_start:
   reset_timer_a();
 
   // 開始待ち
-  if (wait_game_start() != 0) {
-    rc = 0;
-    goto exit;
-  }
+//  if (wait_game_start() != 0) {
+//    rc = 0;
+//    goto exit;
+//  }
 
   // ゲームメインループ
   while (!game_over) {
 
-    // 現在のVSYNC数
+    // 現在のVSYNCカウンタ
     uint32_t current_vsync = vsync_event.vsync_counter;
 
     // ESCキーが押されたら終了 (8フレームごとのチェック)
@@ -709,43 +743,34 @@ game_start:
       }
     }
   
-    // 既にゴール済みなら車体を右へ動かす
+    // 既にゴール済みなら車体を右へすいーっと動かす
     if (car.is_goal) {
       car.sp_x += 4;
-      //printf("%d\n",car.sp_x);
       if (car.sp_x > 256 + 32) {
+        // 画面外に出たらゲーム終了、リザルト確認へ
         game_over = 1;
       }
-      WAIT_VBLANK;
-      WAIT_VSYNC;
-      continue;
+      goto skip_physics;  // このフレームでは物理を動かさない
     }
 
     // ----------------------------------------------------------------
-    // 1. まず足元の路面属性をチェックし、「現在の最高速度制限」を決める
+    // 1. 足元の路面属性をチェックし、「現在の最高速度制限」を決める
     // ----------------------------------------------------------------
     int16_t map_x = car.x >> 4;
     int16_t map_y = car.y >> 4;
     uint32_t map_index = ((uint32_t)map_y * 1440) + map_x;
     uint8_t surface_attr = physical_map[map_index] & 7;
 
-//    int16_t speed_limit = 22 << 8;
     int16_t speed_limit = MAX_SPEED << 8; // デフォルトの道路上での最高速度
-
     if (surface_attr == 6) {
-        // グラベル（砂利）
-//        speed_limit = 6 << 8; 
-        speed_limit = 24 << 8; 
-    } 
-    else if (surface_attr == 4 || surface_attr == 5) {
-        // 縁石なら少し制限
-//        speed_limit = 16 << 8;
-        speed_limit = 64 << 8;
-    } 
-    else if (surface_attr == 0 || surface_attr == 1) {
-        // 芝生
-//        speed_limit = 8 << 8;
-        speed_limit = 32 << 8;
+      // グラベル（砂利）
+      speed_limit = 24 << 8; 
+    } else if (surface_attr == 4 || surface_attr == 5) {
+      // 縁石なら少し制限
+      speed_limit = 64 << 8;
+    } else if (surface_attr == 0 || surface_attr == 1) {
+      // 芝生
+      speed_limit = 32 << 8;
     }
 
     // ----------------------------------------------------------------
@@ -770,83 +795,71 @@ game_start:
     // 255 - MAX_SPEED 以上のとき、手前に引かれている（アクセルON）と判定
     int16_t accel_amount = 0;
     if (throttle_raw >= (255 - MAX_SPEED)) {
-        accel_amount = throttle_raw - (255 - MAX_SPEED); // 引くほど値が大きくなる（0 〜 MAX_SPEED）
+      accel_amount = throttle_raw - (255 - MAX_SPEED); // 引くほど値が大きくなる（0 〜 MAX_SPEED）
     }
 
     int16_t target_speed = accel_amount << 8;     // 共通レンジにつき剰余省略
-//    int16_t target_speed = accel_amount * (22 << 8) / 97; 
-
     if (target_speed > speed_limit) {
-        target_speed = speed_limit; // コントローラ全開でも、路面リミッターで頭打ちにする
+      target_speed = speed_limit; // コントローラ全開でも、路面リミッターで頭打ちにする
     }
 
     // ----------------------------------------------------------------
-    // 3. 実際の車の速度（car.speed）を、目標速度に向けてじわじわ近づける（慣性）
+    // 3. 実際の車の速度（car.speed）を目標速度に向けて近づける（慣性）
     // ----------------------------------------------------------------
+
     // 現在の速度と目標速度の差分を計算
     int16_t speed_diff = target_speed - car.speed;
-
     if (speed_diff > 0) {
-        // 【加速中】：差分が大きければグッと加速し、目標に近づくほど緩やかになる
-        // シフト演算（>> 4）で「差分の1/16」ずつ近づける。
-        // 最低でも「1」は加速させるために +1 などの底上げを挟むと滑らかです。
-//        car.speed += (speed_diff >> 4) + 1;
-//        car.speed += (speed_diff >> 3) + 1;
 
-        int16_t torque = (speed_diff >> 3); // 基本は差分比例（これだけだとオフロードで亀になる）
+      // [加速中]
+
+      // 加速トルク
+      int16_t torque = (speed_diff >> 3); // 基本は差分比例
         
-        // 車の速度が極端に遅い（例：整数部で 16 未満）ときは、
-        // スタック防止用に最低保証トルク（整数部1＝256）を上乗せする
-        if (car.speed < (16 << 8)) {
-            torque += (1 << 8); // ここの数値を 1 や 2 にしてオフロードの脱出感を調整
-        } else {
-            torque += 1;        // 通常域は最低でも「+1」して確実に目標速度へ近づける
-        }
+      // 車の速度が極端に遅いときはスタック防止用に最低保証トルクを上乗せする
+      if (car.speed < (16 << 8)) {
+        torque += (1 << 8);
+      } else {
+        torque += 1;        // 通常域は最低でも「+1」する
+      }
 
-        car.speed += torque;
+      car.speed += torque;
+      if (car.speed > target_speed) {
+        // リミッター
+        car.speed = target_speed;
+      }
 
-        // 行き過ぎ防止
-        if (car.speed > target_speed) car.speed = target_speed;
-    } 
-    else if (speed_diff < 0) {
-        // 【減速中】：グラベル突入やアクセルOFF時
-        // 減速を少し強め（例：差分の1/8ずつ戻す）にしたい場合は >> 3 にします。
-        // 逆にすーっと滑らかに転がしたい場合は >> 4 のままにします。
-//        car.speed += (speed_diff >> 6) - 1; // 負の数なので加算して、最低でも-1
-//        car.speed += (speed_diff >> 4) - 1; // 負の数なので加算して、最低でも-1        
-        car.speed += (speed_diff >> 5) - 4; // 負の数なので少し弱めに引き戻す（最低でも-4）
+    } else if (speed_diff < 0) {
 
-        // 行き過ぎ防止
-        if (car.speed < target_speed) car.speed = target_speed;
+      // [減速中]   
+      car.speed += (speed_diff >> 5) - 4;
+      if (car.speed < target_speed) {
+        // リミッター
+        car.speed = target_speed;
+      }
+
     }
-// ================================================================
-    // 1. 車の向き（angle：0〜8191）の更新
+
     // ================================================================
-    int32_t target_turn = 0;
+    // 4. 車の向き（angle：0〜8191）の更新
+    // ================================================================
+    int32_t target_turn = 0;  // 目標回転力
     
+    // アナログレバーの左右の遊びを考慮
     if (lever_raw < -15 || lever_raw > 15) {
-        // ハンドルを切ると、車の向き（angle）がクイッとインを向く
-        target_turn = (int32_t)lever_raw * (int32_t)(car.speed >> 8);
+      // 目標回転力        
+      target_turn = (int32_t)lever_raw * (int32_t)(car.speed >> 8);
     }
     
-    // ⚡【高速化】「/ 8」という重い割り算を「>> 3」の超高速シフトに変更（XVI実機への優しさ）
+    // 現在回転力を目標回転力にじわっと近づける
     car.current_turn += (target_turn - car.current_turn) >> 3;
-
-    if (car.current_turn < -10 || car.current_turn > 10) {
-        // 🌟【ハンドリングのメインボリューム】
-        // 以前の「/ 90」から分母を大きくして、切れ角をマイルド（弱アンダー方向）にします。
-        // 68000にとって割り算は激重なので、ここもきれいなシフト演算（>>）に置き換えます。
-        //
-        // ・「>> 7」（128で割る相当）：マイルドになり、オーバーステアが綺麗に収まるはずです（まずはここから！）
-        // ・これでもまだ曲がりすぎるなら ➡ 「>> 8」（256で割る）にしてさらに重くする
-        // ・逆にハンドルが重くて曲がらなすぎたら ➡ 「>> 6」（64で割る）にしてクイックにする
-        
-        car.angle += (int16_t)(car.current_turn >> 7); 
+    if (car.current_turn < -10 || car.current_turn > 10) {        
+        car.angle += (int16_t)(car.current_turn >> 7);    // >>8だと重ステ
         car.angle = (car.angle + 8192) & 8191; 
     }
-    
+
     // ================================================================
-    // 2. 【核心】進む向き（move_angle）の遅れ（ヨー・ドリフト）計算
+    // 5. 進む向き（move_angle）の遅れ（ヨー・ドリフト）計算
     // ================================================================
     int16_t angle_diff = car.angle - car.move_angle;
     
@@ -854,48 +867,42 @@ game_start:
     if (angle_diff > 4096)  angle_diff -= 8192;
     if (angle_diff < -4096) angle_diff += 8192;
 
-    // ★タイヤの引き寄せ力（グリップ力）の計算
+    // タイヤの引き寄せ力（グリップ力）の計算
     int16_t current_speed_raw = car.speed >> 8;
     
     // 低速時は完全にカチッとグリップさせる
-    // 以前の 64 から 4倍の 256 へ。これなら角度差が一瞬で埋まります。
     int16_t grip_power = 256; 
     
-    // 滑り出す速度の境界線（閾値）も、最高速90の世界に合わせて引き上げる（例：30〜40キロあたりから滑り出す）
+    // 滑り出す速度閾値
     if (current_speed_raw > 35) {
-        // 🌟 高速時の引き寄せ力（グリップ力）
-        // 以前の「10」の4倍だと「40」になります。
-        // まずは「40」を基準にして走ってみてください。
-        // ・これでもまだツルツル滑りすぎる場合 ➡ 「50」や「60」に上げてグリップを強くする
-        // ・逆に向きがすぐ戻ってドリフト感が物足りない場合 ➡ 「30」や「25」に下げて滑らせる
-        grip_power = 40; 
+      // スピードが出てる時はグリップが低下する
+      grip_power = 40; 
     }
 
     // 実際の進行方向（move_angle）を、車の向き（angle）に向けて「grip_power」の歩幅で引き寄せる
     if (angle_diff > 0) {
-        car.move_angle = (car.move_angle + grip_power) & 8191;
-        // 行き過ぎ防止の条件も、新しい grip_power の値と比較するように統一
-        if (angle_diff < grip_power) car.move_angle = car.angle;
-    }
-    else if (angle_diff < 0) {
-        car.move_angle = (car.move_angle - grip_power) & 8191;
-        if (-angle_diff < grip_power) car.move_angle = car.angle;
+      car.move_angle = (car.move_angle + grip_power) & 8191;
+      // 行き過ぎ防止の条件も、新しい grip_power の値と比較するように統一
+      if (angle_diff < grip_power) car.move_angle = car.angle;
+    } else if (angle_diff < 0) {
+      car.move_angle = (car.move_angle - grip_power) & 8191;
+      if (-angle_diff < grip_power) car.move_angle = car.angle;
     }
 
     // ================================================================
-    // 3. 移動計算（実際に進む方向 move_angle でテーブル引き）
+    // 6. 移動計算（実際に進む方向 move_angle でテーブル引き）
     // ================================================================
     int16_t move_table_idx = car.move_angle >> 8; // 32方向に落とす
 
-    // speedも座標倍率も元の正常な状態を維持！
+    // 事前に計算してあった256倍精度cos/sinルックアップテーブルを使う
     car.x += ((int32_t)car.speed * cos_table[move_table_idx]) >> 16;
     car.y += ((int32_t)car.speed * sin_table[move_table_idx]) >> 16;
 
-    // 16倍世界から通常のドット座標へ（一旦クランプなしで変換）
+    // 16倍世界から通常のドット座標へ
     map_x = car.x >> 4;
     map_y = car.y >> 4;
 
-    // 2. カメラ座標を決定
+    // カメラ座標を決定
     car.cam_x = map_x;
     if (car.cam_x < CAM_X_MIN) car.cam_x = CAM_X_MIN;
     if (car.cam_x > CAM_X_MAX) car.cam_x = CAM_X_MAX;
@@ -904,22 +911,20 @@ game_start:
     if (car.cam_y < CAM_Y_MIN) car.cam_y = CAM_Y_MIN;
     if (car.cam_y > CAM_Y_MAX) car.cam_y = CAM_Y_MAX;
 
-    // 3. カメラの位置を基準にクランプする
+    // カメラの位置を基準にクランプ
     int16_t min_x = car.cam_x - CAM_X_MIN; 
     int16_t max_x = car.cam_x + CAM_X_MIN; 
     int16_t min_y = car.cam_y - CAM_Y_MIN;
     int16_t max_y = car.cam_y + CAM_Y_MIN;
     
-    // ★【修正】：画面のフチ（ガード）にぶつかった時「だけ」、
-    // 物理座標（map）を押し戻し、さらに固定小数点（car.x/y）もフチの座標でガチッと上書きします。
+    // 世界の端のフチのガード
     if (map_x < min_x) { map_x = min_x; car.x = (int32_t)map_x << 4; }
     if (map_x > max_x) { map_x = max_x; car.x = (int32_t)map_x << 4; }
-
     if (map_y < min_y) { map_y = min_y; car.y = (int32_t)map_y << 4; }
     if (map_y > max_y) { map_y = max_y; car.y = (int32_t)map_y << 4; }
 
     // 画面の中心位置 128 (ピクセル) + (車とカメラの物理距離)
-    // ただし、物理距離をピクセル単位にスケール変換する必要がある
+    // ただし、物理距離をピクセル単位にスケール変換する必要がある(横長ドットのため)
     car.sp_x = 128 + (int16_t)(((int32_t)(map_x - car.cam_x) * 256) / 362);
     car.sp_y = 128 + (map_y - car.cam_y);
 
@@ -931,157 +936,149 @@ game_start:
     int16_t slip_angle = abs(angle_diff);
 
     // 2. ドリフト成立条件のチェック
-    // 「速度が一定（例: 等倍で10ドット）以上」かつ「滑り角が一定（例: 32方向基準で1方向分=256）以上」
+    // 「速度が一定以上」かつ「滑り角が一定（例: 32方向基準で1方向分=256）以上」
     // かつ「足元が道路または縁石（surface_attrが3, 4, 5）」のとき
     if ((car.speed >> 8) > 10 && slip_angle > 256 && 
         (surface_attr == 3 || surface_attr == 4 || surface_attr == 5)) {
-        
-        drift_combo++;
+      
+      drift_combo++;
 
-        // 1. まず滑り角（slip_angle: 0〜4096）の解像度を大幅に削る
-        // >> 8 することで、「32方向基準で何方向分ズレているか（0〜16）」の扱いやすい数値にします。
-        uint16_t slip_direction_count = slip_angle >> 8; 
+      // 滑り角（slip_angle: 0〜4096）の解像度を大幅に削る
+      uint16_t slip_direction_count = slip_angle >> 8; 
 
-        // 2. スピード（最大24）× 角度のズレ（最大16）
-        // これにより、1フレームあたりの最大値は 24 * 16 = 384 になります。
-        uint32_t raw_frame_point = (uint32_t)(car.speed >> 8) * slip_direction_count;
+      // スピード（最大90）× 角度のズレ（最大16）
+      uint32_t raw_frame_point = (uint32_t)(car.speed >> 8) * slip_direction_count;
 
-        // 3. これをさらに「1フレームあたり最大で数点」レベルまで右シフトで縮小
-        // 例えば >> 6（64で割る）すると、最大384だったものが「0 〜 6点」のコンパクトな値になります。
-        uint32_t base_point = raw_frame_point >> 6;
+      // 「1フレームあたり最大で数点」レベルまで右シフトで縮小
+      uint32_t base_point = raw_frame_point >> 5;
 
-        // 4. 【ここがキモ】1以上点数が入るなら、それを「10点単位」に変換して加算！
-        if (base_point > 0) {
-            // 例：base_pointが 1〜6 なら、10点、20点、…、60点 が毎フレーム入る
-            current_drift_points += (base_point * 10);
-        }
+      // 1以上点数が入るなら、それを「10点単位」に変換して加算
+      if (base_point > 0) {
+          current_drift_points += (base_point * 10);
+      }
 
     } else {
-        // ------------------------------------------------------------
-        // ドリフト終了時（直線に戻った、または速度が落ちた、コースアウトした）
-        // ------------------------------------------------------------
-        if (current_drift_points > 0) {
+
+      // ------------------------------------------------------------
+      // ドリフト終了時（直線に戻った、または速度が落ちた、コースアウトした）
+      // ------------------------------------------------------------
+      if (current_drift_points > 0) {
             
-            // ★【ここを追加】終了時に道路（3,4）または縁石（5）の上にいるかチェック！
-            if (!car.wrong_way && (surface_attr == 3 || surface_attr == 4 || surface_attr == 5)) {
+        // 終了時に道路（3,4）または縁石（5）の上にいるかチェック
+        if (!car.wrong_way && (surface_attr == 3 || surface_attr == 4 || surface_attr == 5)) {
                 
-                // 道路上なら見事に成功！ポイント獲得
-                if (drift_combo > 60) {
-                    current_drift_points += 500; // ロングコンボボーナス
-                }
+          // 道路上ならポイント獲得
+          if (drift_combo > 60) {
+            current_drift_points += 500; // ロングコンボ
+          }
                 
-                // 獲得メッセージを作って、トータルスコアに加算
-                int_to_drift_pt_mes((uint8_t*)vsync_event.drift_points_mes, 8, current_drift_points);
-                vsync_event.event_refresh_drift_points = 1;
-                vsync_event.drift_points_counter = 50; 
-                
-                car.score += current_drift_points;
-                int_to_ascii_right((uint8_t*)vsync_event.score_mes, 8, car.score);                
-                vsync_event.event_refresh_score = 1;
+          // 獲得ポイント表示をVSYNCハンドラに依頼
+          int_to_drift_pt_mes((uint8_t*)vsync_event.drift_points_mes, 8, current_drift_points);
+          vsync_event.event_refresh_drift_points = 1;
+          vsync_event.drift_points_counter = 50; 
 
-                if (car.score > hi_score) {
-                  hi_score = car.score;
-                  strcpy((uint8_t*)vsync_event.hi_score_mes, (uint8_t*)vsync_event.score_mes);
-                  vsync_event.event_refresh_hi_score = 1;
-                }
+          // トータルスコアに追加し、VSYNCハンドラに表示更新依頼
+          car.score += current_drift_points;
+          int_to_ascii_right((uint8_t*)vsync_event.score_mes, 8, car.score);                
+          vsync_event.event_refresh_score = 1;
 
-            } else {
-                // ★失敗！芝生や砂利にハミ出して終了した場合は「無効（0点）」
-                // メッセージを "   +0pt." にするか、あるいは " FAILED " などの文字列にしても面白いです
-                int_to_drift_pt_mes((uint8_t*)vsync_event.drift_points_mes, 8, 0); 
-                vsync_event.event_refresh_drift_points = 1;
-                vsync_event.drift_points_counter = 25; 
-                // ※トータルスコア（score）への加算はスキップ！
-            }
+          // ラップごとのスコアにも加算しておく
+          car.lap_scores[car.lap_count] += current_drift_points;
 
-            // 次のドリフトのために状態をリセット
-            current_drift_points = 0;
-            drift_combo = 0;
+          // もしハイスコアを更新した場合は、そちらも表示更新依頼
+          if (car.score > hi_score) {
+            hi_score = car.score;
+            strcpy((uint8_t*)vsync_event.hi_score_mes, (uint8_t*)vsync_event.score_mes);
+            vsync_event.event_refresh_hi_score = 1;
+          }
+
+        } else {
+
+          // 芝生や砂利にハミ出して終了した場合は0pt.
+          int_to_drift_pt_mes((uint8_t*)vsync_event.drift_points_mes, 8, 0); 
+          vsync_event.event_refresh_drift_points = 1;
+          vsync_event.drift_points_counter = 25;      // 通常の半分の時間だけ +0pt. を表示
         }
+
+        // 次のドリフトのために状態をリセット
+        current_drift_points = 0;
+        drift_combo = 0;
+      }
     }
 
-    // 物理ループ内のゲートチェック例
+    // ================================================================
+    // 7. チェックポイント・ラップ通過確認
+    // ================================================================
     uint8_t current_gate = physical_map[map_index] >> 4; // 0〜4
 
     if (current_gate > 0) {
 
       if (current_gate != car.last_gate) {
             
-        // 新しいゲートに突入した瞬間なので、ここでlast_gateを更新
+        // 新しいゲートに突入した瞬間なので、last_gateを更新
         car.last_gate = current_gate;
 
-        // 自分が次に通過すべきゲート番号（最初は 1 ）と一致したか？
+        // 自分が次に通過すべきゲート番号（最初は1）と一致したか？
         if (current_gate == car.next_checkpoint) {
 
           car.wrong_way = 0;
             
-            if (car.next_checkpoint == 1) {
-                // 【ゲート1：スタートラインを通過した時】
-                if (car.lap_count == 0) {
-                    // ゲーム開始直後の最初の通過
-                    car.lap_count = 1;      // 表示は「LAP 1」に！
-                    car.next_checkpoint = 2; // 次はゲート2を目指す
-                    int_to_ascii_right((uint8_t*)vsync_event.lap_count_mes, 4, car.lap_count);   
-                    vsync_event.event_refresh_lap_count = 1;
-                    vsync_event.event_refresh_lap_mes = 1;
-                    vsync_event.lap_mes_counter = 50;
-                } 
-                else if (car.lap_count >= 5) {
-                    // ★5周完了状態で再びスタートラインを踏んだ ＝ ゴール！！
-                    //game_over = 1;
-                    //is_goal_sequense = 1;   // ゴール演出（操作をAIに任せて車速を絞るなど）へ
-                    // ここで最終スコアが完全にロック（確定）されます
-                    car.angle = 0;
-                    car.move_angle = 0;
-                    car.is_goal = 1;
-                    vsync_event.event_refresh_goal = 1;
-                    vsync_event.goal_counter = 200;
-                } 
-                else {
-                    // 2, 3, 4, 5周目の通過
-                    car.lap_count++;         // LAP 2, 3, 4, 5 へ進む
-                    car.next_checkpoint = 2; // 次はゲート2へ
-                    // TODO: 「LAP CLEAR!」などの文字を作ってVSYNCへ
-                    int_to_ascii_right((uint8_t*)vsync_event.lap_count_mes, 4, car.lap_count);   
-                    vsync_event.event_refresh_lap_count = 1;
-                    vsync_event.event_refresh_lap_mes = car.lap_count;
-                    vsync_event.lap_mes_counter = 50;
-                }
+          if (car.next_checkpoint == 1) {
+            // 【ゲート1：スタートラインを通過した時】
+            if (car.lap_count == 0) {
+              // ゲーム開始直後の最初の通過
+              car.lap_times[0] = vsync_event.vsync_counter;
+              car.lap_count = 1;
+              car.next_checkpoint = 2;
+              int_to_ascii_right((uint8_t*)vsync_event.lap_count_mes, 4, car.lap_count);   
+              vsync_event.event_refresh_lap_count = 1;
+              vsync_event.event_refresh_lap_mes = 1;
+              vsync_event.lap_mes_counter = 50;
+            } else if (car.lap_count >= 5) {
+              // ゴールした
+              car.lap_times[5] = vsync_event.vsync_counter;
+              car.angle = 0;
+              car.move_angle = 0;
+              car.is_goal = 1;
+              vsync_event.event_refresh_goal = 1;
+              vsync_event.goal_counter = 200;
+            } else {
+              // 2, 3, 4, 5周目の通過
+              car.lap_times[car.lap_count++] = vsync_event.vsync_counter;
+              car.next_checkpoint = 2;
+              int_to_ascii_right((uint8_t*)vsync_event.lap_count_mes, 4, car.lap_count);   
+              vsync_event.event_refresh_lap_count = 1;
+              vsync_event.event_refresh_lap_mes = car.lap_count;
+              vsync_event.lap_mes_counter = 50;
             } 
-            else if (car.next_checkpoint == 4) {
-                // 最終ゲートを踏んだら、次はスタートライン（ゲート1）を待つ
-                car.next_checkpoint = 1;
-            } 
-            else {
-                // ゲート2, 3を順調にクリア
-                car.next_checkpoint++;
-            }
-        }
-        else {
-              // 現在溜まっているドリフトの暫定ポイントをその場で強制的に「ゼロ」に没収！
-              if (current_drift_points > 0) {
-                  current_drift_points = 0;
-                  drift_combo = 0;
-              }
-              vsync_event.event_refresh_wrong_way = 1;
-              vsync_event.wrong_way_counter = 50;
-              car.wrong_way = 1;
-              // さらに厳しくするなら：
-              // 一瞬（例えば1秒間）だけ強制的に最高速度制限（speed_limit）をグラベル以下（4<<8など）に落として、
-              // 「ズルしたせいで車が出力を絞られた」ようなペナルティ状態にするのも面白いです。
+          } else if (car.next_checkpoint == 4) {
+            // 最終ゲートを踏んだら、次はスタートライン（ゲート1）を待つ
+            car.next_checkpoint = 1;
+          } else {
+            // ゲート2, 3を順調にクリア
+            car.next_checkpoint++;
           }
-        }
+        } else {
 
-      } else {
-        car.last_gate = 0;
+          // コースを外れた場合は、現在溜まっているドリフトの暫定ポイントを没収
+          if (current_drift_points > 0) {
+            current_drift_points = 0;
+            drift_combo = 0;
+          }
+          vsync_event.event_refresh_wrong_way = 1;
+          vsync_event.wrong_way_counter = 50;
+          car.wrong_way = 1;
+        }
       }
 
-      // 追い越しガード
-    while (vsync_event.vsync_counter == current_vsync) {
-      uint8_t opm_status = *(volatile uint8_t*)(0xe90003);
+    } else {
+      car.last_gate = 0;
     }
-    //WAIT_VBLANK;
-    //if (!(vsync_event.vsync_counter & 7)) printf("%d %d\n",vsync_event.vsync_counter,current_vsync);
+
+skip_physics:
+    // 物理計算の画面描画追い越しガード
+    while (vsync_event.vsync_counter == current_vsync) {
+    }
     
   } // ゲームメインループここまで
 
@@ -1091,7 +1088,7 @@ game_start:
     vsync = 0;
   }
 
-  // ゲームオーバー待機画面
+  // リザルト表示待機画面
   if (game_over) {
     if (wait_game_over() != 0) {
       rc = 0;
@@ -1103,7 +1100,7 @@ game_start:
   usleep(500000);
 
   goto game_start;
-
+  
 
 exit:
 
