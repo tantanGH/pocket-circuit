@@ -12,6 +12,7 @@
 #include "pocketct.h"
 #include "sincos.h"
 #include "pattern.h"
+#include "smoke.h"
 #include "gpalette.h"
 #include "keyboard.h"
 #include "crtc.h"
@@ -70,6 +71,7 @@ static void init_player_car(volatile PLAYER_CAR *car, int16_t start_x, int16_t s
   car->next_checkpoint = 1;
   car->last_gate = 0;
   car->wrong_way = 0;
+  car->is_drifting = 0;
   car->is_goal = 0;
 
   for (int16_t i = 0; i < 6; i++) {
@@ -233,7 +235,8 @@ static void __attribute__((interrupt)) refresh_screen() {
   
   // 32段階回転のどのパターンを使うか
   // 1方向ごとに4パターン使う
-  uint16_t pattern_base = 0x100 + ((car.angle >> 8) << 2);    // 内部的に256倍精度なのを32段階に戻してから4倍
+  uint16_t angle_32 = (car.angle >> 8) & 31;
+  uint16_t pattern_base = 0x100 + (angle_32 << 2);    // 内部的に256倍精度なのを32段階に戻してから4倍
 
   // 自車の表示 (スプライト0-4)
   SP_SCRL[  0 ] = sp_base_x;
@@ -256,6 +259,36 @@ static void __attribute__((interrupt)) refresh_screen() {
   SP_SCRL[ 14 ] = pattern_base + 3;
   SP_SCRL[ 15 ] = 3;
 
+
+  // ドリフト中のタイヤスモーク
+  if (car.is_drifting) {
+    uint16_t smoke_pattern = 0x200 + 128 + ((vsync_event.vsync_counter >> 2) & 3);
+    SP_SCRL[ 16 ] = sp_base_x + smoke_rear_left_x[angle_32];
+    SP_SCRL[ 17 ] = sp_base_y + smoke_rear_left_y[angle_32];
+    SP_SCRL[ 18 ] = smoke_pattern;
+    SP_SCRL[ 19 ] = 3;
+
+    SP_SCRL[ 20 ] = sp_base_x + smoke_rear_right_x[angle_32];
+    SP_SCRL[ 21 ] = sp_base_y + smoke_rear_right_y[angle_32];
+    SP_SCRL[ 22 ] = smoke_pattern;
+    SP_SCRL[ 23 ] = 3;
+
+    SP_SCRL[ 24 ] = sp_base_x + smoke_front_left_x[angle_32];
+    SP_SCRL[ 25 ] = sp_base_y + smoke_front_left_y[angle_32];
+    SP_SCRL[ 26 ] = smoke_pattern;
+    SP_SCRL[ 27 ] = 3;
+
+    SP_SCRL[ 28 ] = sp_base_x + smoke_front_right_x[angle_32];
+    SP_SCRL[ 29 ] = sp_base_y + smoke_front_right_y[angle_32];
+    SP_SCRL[ 30 ] = smoke_pattern;
+    SP_SCRL[ 31 ] = 3;    
+  } else {
+    // ドリフトしていないときは消す
+    SP_SCRL[ 19 ] = 0;
+    SP_SCRL[ 23 ] = 0;
+    SP_SCRL[ 27 ] = 0;
+    SP_SCRL[ 31 ] = 0;
+  }  
 
   // グラフィック画面のスクロール
 
@@ -299,21 +332,21 @@ static void __attribute__((interrupt)) refresh_screen() {
   // ドリフトポイント消去カウントダウン
   if (vsync_event.drift_points_counter > 0) {
     if (vsync_event.drift_points_counter == 1) {
-      put_text_8x8(96,64,3,1,"          ");      
+      put_text_8x8(96,64,3,1,"           ");      
     }
     vsync_event.drift_points_counter--;
   }
 
   // コース外れ警告表示イベント
   if (vsync_event.event_refresh_wrong_way) {
-    put_text_8x8(96,48,3,1,"WRONG WAY");
+    put_text_8x8(96,48,1,1,"WRONG WAY");
     vsync_event.event_refresh_wrong_way = 0;
   }
 
   // コース外れ警告消去カウントダウン
   if (vsync_event.wrong_way_counter > 0) {
     if (vsync_event.wrong_way_counter == 1) {
-      put_text_8x8(96,48,3,1,"         ");
+      put_text_8x8(96,48,1,1,"         ");
     }
     vsync_event.wrong_way_counter--;
   }
@@ -381,14 +414,20 @@ static void init_sp_pcg() {
     SP_SCRL[ i * 4 + 3 ] = 0;               
   }
 
-  // PCGパターン(ブロック) 16x16が4つ * 32方向で128個使う
+  // PCGパターン(車体) 16x16が4つ * 32方向で128個使う
   for (int16_t i = 0; i < 128; i++) {
     memcpy((void*)&PCG[i * 64], (void*)(&sp_pattern_data[i * 64]), 128);
+  }
+
+  // PCGパターン(スモーク) 16x16が4つ
+  for (int16_t i = 0; i < 4; i++) {
+    memcpy((void*)&PCG[(i+128) * 64], (void*)(&sp_smoke_pattern_data[i * 64]), 128);
   }
   
   // スプライトパレット設定
   for (int16_t i = 0; i < 16; i++) {
     PAL_BLK1[i] = sp_palette_data[i];
+    PAL_BLK2[i] = sp_smoke_palette_data[i];
   }
 
   *BG_CTRL = 0x200;   // SP/BG ON, BG1-BGTEXT0, BG0-BGTEXT1, BG1 OFF, BG0 OFF
@@ -584,6 +623,42 @@ static int16_t wait_game_over() {
   }
 
   return 0;
+}
+
+//
+//  スコアの更新(ドリフト終了時またはゴール時)
+//
+static void update_score(int16_t surface_attr, uint16_t drift_combo, uint32_t current_drift_points) {
+      
+  // 終了時に道路（3,4）または縁石（5）の上にいるかチェック
+  if (!car.wrong_way && (surface_attr == 3 || surface_attr == 4 || surface_attr == 5)) {
+          
+    // 道路上ならポイント獲得
+    if (drift_combo > 60) {
+      current_drift_points += 500; // ロングコンボ
+    }
+          
+    // 獲得ポイント表示をVSYNCハンドラに依頼
+    int_to_drift_pt_mes((uint8_t*)vsync_event.drift_points_mes, 9, current_drift_points);
+    vsync_event.event_refresh_drift_points = 1;
+    vsync_event.drift_points_counter = 50; 
+
+    // トータルスコアに追加し、VSYNCハンドラに表示更新依頼
+    car.score += current_drift_points;
+    int_to_ascii_right((uint8_t*)vsync_event.score_mes, 8, car.score);                
+    vsync_event.event_refresh_score = 1;
+
+    // ラップごとのスコアにも加算しておく
+    car.lap_scores[car.lap_count] += current_drift_points;
+
+  } else {
+
+    // 芝生や砂利にハミ出して終了した場合は0pt.
+    int_to_drift_pt_mes((uint8_t*)vsync_event.drift_points_mes, 9, 0); 
+    vsync_event.event_refresh_drift_points = 1;
+    vsync_event.drift_points_counter = 25;      // 通常の半分の時間だけ +0pt. を表示
+
+  }
 }
 
 //
@@ -928,14 +1003,17 @@ game_start:
     car.sp_x = 128 + (int16_t)(((int32_t)(map_x - car.cam_x) * 256) / 362);
     car.sp_y = 128 + (map_y - car.cam_y);
 
-    // スコア増分計算
-    // 1. 滑り角（abs(angle_diff)）を取得
+
+    // ================================================================
+    // 7. ドリフトポイント加算
+    // ================================================================    
+    // 滑り角（abs(angle_diff)）を取得
     angle_diff = car.angle - car.move_angle;
     if (angle_diff > 4096)  angle_diff -= 8192;
     if (angle_diff < -4096) angle_diff += 8192;
     int16_t slip_angle = abs(angle_diff);
 
-    // 2. ドリフト成立条件のチェック
+    // ドリフト成立条件のチェック
     // 「速度が一定以上」かつ「滑り角が一定（例: 32方向基準で1方向分=256）以上」
     // かつ「足元が道路または縁石（surface_attrが3, 4, 5）」のとき
     if ((car.speed >> 8) > 10 && slip_angle > 256 && 
@@ -957,53 +1035,32 @@ game_start:
           current_drift_points += (base_point * 10);
       }
 
+      car.is_drifting = 1;
+
     } else {
 
       // ------------------------------------------------------------
       // ドリフト終了時（直線に戻った、または速度が落ちた、コースアウトした）
       // ------------------------------------------------------------
       if (current_drift_points > 0) {
-            
-        // 終了時に道路（3,4）または縁石（5）の上にいるかチェック
-        if (!car.wrong_way && (surface_attr == 3 || surface_attr == 4 || surface_attr == 5)) {
-                
-          // 道路上ならポイント獲得
-          if (drift_combo > 60) {
-            current_drift_points += 500; // ロングコンボ
-          }
-                
-          // 獲得ポイント表示をVSYNCハンドラに依頼
-          int_to_drift_pt_mes((uint8_t*)vsync_event.drift_points_mes, 8, current_drift_points);
-          vsync_event.event_refresh_drift_points = 1;
-          vsync_event.drift_points_counter = 50; 
+        
+        // スコア更新
+        update_score(surface_attr, drift_combo, current_drift_points);
 
-          // トータルスコアに追加し、VSYNCハンドラに表示更新依頼
-          car.score += current_drift_points;
-          int_to_ascii_right((uint8_t*)vsync_event.score_mes, 8, car.score);                
-          vsync_event.event_refresh_score = 1;
-
-          // ラップごとのスコアにも加算しておく
-          car.lap_scores[car.lap_count] += current_drift_points;
-
-          // もしハイスコアを更新した場合は、そちらも表示更新依頼
-          if (car.score > hi_score) {
-            hi_score = car.score;
-            strcpy((uint8_t*)vsync_event.hi_score_mes, (uint8_t*)vsync_event.score_mes);
-            vsync_event.event_refresh_hi_score = 1;
-          }
-
-        } else {
-
-          // 芝生や砂利にハミ出して終了した場合は0pt.
-          int_to_drift_pt_mes((uint8_t*)vsync_event.drift_points_mes, 8, 0); 
-          vsync_event.event_refresh_drift_points = 1;
-          vsync_event.drift_points_counter = 25;      // 通常の半分の時間だけ +0pt. を表示
+        // もしハイスコアを更新した場合は、そちらも表示更新依頼
+        if (car.score > hi_score) {
+          hi_score = car.score;
+          strcpy((uint8_t*)vsync_event.hi_score_mes, (uint8_t*)vsync_event.score_mes);
+          vsync_event.event_refresh_hi_score = 1;
         }
 
         // 次のドリフトのために状態をリセット
         current_drift_points = 0;
         drift_combo = 0;
       }
+
+      car.is_drifting = 0;
+
     }
 
     // ================================================================
@@ -1042,6 +1099,20 @@ game_start:
               car.is_goal = 1;
               vsync_event.event_refresh_goal = 1;
               vsync_event.goal_counter = 200;
+
+              // ゴール時にポイントが貯まっていたら加算する
+              if (current_drift_points > 0) {                
+                // スコア更新
+                update_score(surface_attr, drift_combo, current_drift_points);
+
+                // もしハイスコアを更新した場合は、そちらも表示更新依頼
+                if (car.score > hi_score) {
+                  hi_score = car.score;
+                  strcpy((uint8_t*)vsync_event.hi_score_mes, (uint8_t*)vsync_event.score_mes);
+                  vsync_event.event_refresh_hi_score = 1;
+                }
+              }
+
             } else {
               // 2, 3, 4, 5周目の通過
               car.lap_times[car.lap_count++] = vsync_event.vsync_counter;
@@ -1100,7 +1171,7 @@ skip_physics:
   usleep(500000);
 
   goto game_start;
-  
+
 
 exit:
 
