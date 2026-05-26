@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define VERSION "0.2.0 (2026/05/25)"
+#define VERSION "0.2.1 (2026/05/26)"
 
 // コースデータファイル名
 #define COURSE_PHYS_DATA_FILE  "COURSE1.DAT"
@@ -51,6 +51,7 @@ typedef struct {
   int16_t next_checkpoint;  // 次に通過すべきチェックポイント番号（0〜3）
   int16_t last_gate;        // 最後に通ったチェックポイント
   int16_t wrong_way;        // 今道を外れているか
+  int16_t is_drifting;      // 今ドリフト中か
   int16_t is_goal;          // すでにゴールラインに到達しているか
   uint32_t lap_times[6];    // スタート・ラップ時の vsync カウンタの値
   uint32_t lap_scores[6];   // 各ラップごとのスコア [0]は常にゼロ

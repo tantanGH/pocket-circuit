@@ -7,7 +7,7 @@ endif
 .SUFFIXES:
 
 # バージョン
-VERSION = 020
+VERSION = 021
 
 # 実行ファイル名
 TARGET_FILE_000 = POCKETCT.X
@@ -40,7 +40,7 @@ C_SRCS = main.c
 ASM_SRCS = 
 
 # *.h source files
-HEADER_SRCS = keyboard.h crtc.h pattern.h gpalette.h sincos.h pattern.h pocketct.h
+HEADER_SRCS = keyboard.h crtc.h pattern.h smoke.h gpalette.h sincos.h pattern.h pocketct.h
 
 # リンク対象のライブラリファイル
 LIBS = -lajoy
