@@ -489,7 +489,7 @@ static void init_sp_pcg() {
   }
 #endif
 
-  *BG_CTRL = 0x203;   // SP/BG ON, BG1-BGTEXT0, BG0-BGTEXT1, BG1 OFF, BG0 ON
+  *BG_CTRL = 0x202;   // SP/BG ON, BG1-BGTEXT0, BG0-BGTEXT1, BG1 OFF, BG0 OFF
 }
 
 //
@@ -545,6 +545,17 @@ static void graphic_on() {
   // SP:ON TX:ON GS4:ON(1024x1024)
   *VDC_R2 |= 0x70; 
 }
+
+#ifdef __3D_VIEW__
+// BG画面ON
+static void bg_on() {
+  *BG_CTRL = 0x203;   // SP/BG ON, BG1-BGTEXT0, BG0-BGTEXT1, BG1 OFF, BG0 ON
+}
+// BG画面OFF
+static void bg_off() {
+  *BG_CTRL = 0x202;   // SP/BG ON, BG1-BGTEXT0, BG0-BGTEXT1, BG1 OFF, BG0 OFF
+}
+#endif
 
 //
 //  1024x1024の4bitパック(512KB)を、GVRAM(16bit/1dot)へ64bit(32bit*2)単位で展開
@@ -640,6 +651,12 @@ static int16_t wait_game_over() {
   // テキスト画面クリア
   _dos_c_cls_al();
 
+#ifdef __3D_VIEW__  
+  // BG画面オフ
+  bg_off();
+#endif
+
+  // リザルト表示
   put_text_8x8(80,8,2,1,"- RESULT - ");
 
   static uint8_t mes[256];
@@ -746,31 +763,6 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
     strcpy(error_mes,"3D表示にはハイメモリドライバの組み込みが必要です。");
     goto exit;
   }
-
-  // 3D描画用ダブルバッファをハイメモリに確保
-  size_t view3d_buffer_size = 256 * 160 * sizeof(uint16_t);
-  view3d_frame_buffers[0] = himem_malloc(view3d_buffer_size);
-  view3d_frame_buffers[1] = himem_malloc(view3d_buffer_size);
-  if (view3d_frame_buffers[0] == NULL || view3d_frame_buffers[1] == NULL) {
-    strcpy(error_mes,"ハイメモリが不足しています。");
-    goto exit;
-  }
-
-  // いったんゼロクリアしておく
-  memset(view3d_frame_buffers[0],0,view3d_buffer_size);
-  memset(view3d_frame_buffers[1],0,view3d_buffer_size);
-
-  // レイキャスト用ルックアップテーブルをハイメモリにコピー
-  size_t raycast_lut_size = 512 * 128 * sizeof(RASTER_LINE_DATA);
-  RASTER_LINE_DATA* raycast_lut = himem_malloc(raycast_lut_size);
-  if (raycast_lut == NULL) {
-    strcpy(error_mes,"ハイメモリが不足しています。");
-    goto exit;    
-  }
-  if (load_file("RAY3D.LUT", (void*)raycast_lut, raycast_lut_size) != 0) {
-    strcpy(error_mes,"RAY3D.LUTファイルの読み込みに失敗しました。");
-    goto exit;
-  }
 #endif
 
   // AJOY.X常駐チェック
@@ -838,19 +830,7 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
 
 #ifndef __3D_VIEW__
   physical_map = course_data + 32;    // 専用32バイトはヘッダ それ以降に物理マップデータ(1440x1024)
-#else
-  physical_map = himem_malloc(2048 * 1024 * sizeof(uint8_t));
-  if (physical_map == NULL) {
-    strcpy(error_mes, "ハイメモリが不足しています。");
-    goto exit;
-  }
-  for (int16_t i = 0; i < 1024; i++) {
-    memcpy(physical_map + 2048 * i, course_data + 32 + 1440 * i, 1440);
-    memset(physical_map + 2048 * i + 1440, 1, 2048 - 1440);
-  }
-#endif
-
-#ifndef __3D_VIEW__
+  
   // コースグラフィックデータのロード
   grp_data = malloc(DISP_H * (DISP_W / 2));
   if (grp_data == NULL) {
@@ -869,6 +849,44 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   grp_data = NULL;
 #endif
 
+#ifdef __3D_VIEW__
+  // 3D描画用ダブルバッファをハイメモリに確保
+  size_t view3d_buffer_size = 256 * 160 * sizeof(uint16_t);
+  view3d_frame_buffers[0] = himem_malloc(view3d_buffer_size);
+  view3d_frame_buffers[1] = himem_malloc(view3d_buffer_size);
+  if (view3d_frame_buffers[0] == NULL || view3d_frame_buffers[1] == NULL) {
+    strcpy(error_mes,"ハイメモリが不足しています。");
+    goto exit;
+  }
+
+  // いったんゼロクリアしておく
+  memset(view3d_frame_buffers[0],0,view3d_buffer_size);
+  memset(view3d_frame_buffers[1],0,view3d_buffer_size);
+
+  // レイキャスト用ルックアップテーブルをハイメモリにコピー
+  size_t raycast_lut_size = 512 * 128 * sizeof(RASTER_LINE_DATA);
+  RASTER_LINE_DATA* raycast_lut = himem_malloc(raycast_lut_size);
+  if (raycast_lut == NULL) {
+    strcpy(error_mes,"ハイメモリが不足しています。");
+    goto exit;    
+  }
+  if (load_file("RAY3D.LUT", (void*)raycast_lut, raycast_lut_size) != 0) {
+    strcpy(error_mes,"RAY3D.LUTファイルの読み込みに失敗しました。");
+    goto exit;
+  }
+
+  // 物理マップを2048境界にパディングしながら展開
+  physical_map = himem_malloc(2048 * 1024 * sizeof(uint8_t));
+  if (physical_map == NULL) {
+    strcpy(error_mes, "ハイメモリが不足しています。");
+    goto exit;
+  }
+  for (int16_t i = 0; i < 1024; i++) {
+    memcpy(physical_map + 2048 * i, course_data + 32 + 1440 * i, 1440);
+    memset(physical_map + 2048 * i + 1440, 1, 2048 - 1440);
+  }
+#endif
+
   // ゲームループ
 game_start:
 
@@ -877,6 +895,10 @@ game_start:
 
   // グラフィックON
   graphic_on();
+
+#ifdef __3D_VIEW__
+  bg_on();
+#endif
 
   // VSYNCイベントステータス初期化
   init_vsync_event(&vsync_event);
@@ -938,6 +960,7 @@ game_start:
   
     // 既にゴール済みなら車体を右へすいーっと動かす
     if (car.is_goal) {
+      car.x += 6 << 4;
       car.sp_x += 4;
       if (car.sp_x > 256 + 32) {
         // 画面外に出たらゲーム終了、リザルト確認へ
