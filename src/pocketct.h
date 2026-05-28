@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define VERSION "0.2.1 (2026/05/26)"
+#define VERSION "0.3.0 (2026/05/29)"
 
 // コースデータファイル名
 #define COURSE_PHYS_DATA_FILE  "COURSE1.DAT"
@@ -45,6 +45,13 @@ typedef struct {
   int16_t sp_x;             // 車体中心の表示画面上のX座標(0 ~ 255) *スプライト画面のオフセット(16)考慮なし
   int16_t sp_y;             // 車体中心の表示画面上のY座標(0 ~ 255) *スプライト画面のオフセット(16)考慮なし
 
+#ifdef __3D_VIEW__
+  // 3D描画用パラメータ
+  int16_t cam_height;       // カメラの高さ (H) ：固定値(例:32など)またはジャンプ等で変動
+  int16_t focal_length;     // 焦点距離 (F) ：視野角の広さ。基本固定値(例:128など)
+  int16_t horizon_y;        // 水平線の画面Y座標：基本固定値(例:96)。ここより下を3D描画する
+#endif
+
   // ラップカウント用
   uint32_t score;           // 現在のトータルスコア
   int16_t lap_count;        // 現在の周回数（1からスタート）
@@ -84,5 +91,14 @@ typedef struct {
   uint8_t lap_count_mes[ 32 ];          // ラップカウント表示用
 
 } VSYNC_EVENT;
+
+#ifdef __3D_VIEW__
+typedef struct {
+    int32_t start_rel_x;
+    int32_t start_rel_y;
+    int32_t step_x;
+    int32_t step_y;
+} RASTER_LINE_DATA;
+#endif
 
 #endif

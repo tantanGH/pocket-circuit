@@ -17,6 +17,12 @@
 #include "keyboard.h"
 #include "crtc.h"
 
+#ifdef __3D_VIEW__
+#include <himem.h>
+#include "memcpy256.h"
+#include "sky.h"
+#endif
+
 // 自機
 static volatile PLAYER_CAR car = { 0 };
 
@@ -37,6 +43,13 @@ static uint16_t ajoy_buffer[5];
 
 // エラーメッセージ出力用バッファ
 static uint8_t error_mes[ 256 ];
+
+#ifdef __3D_VIEW__
+// 3D描画用フレームバッファ(ハイメモリ上のダブルバッファ)
+static uint16_t* view3d_frame_buffers[2] = { 0 };
+static int16_t page3d_calc = 0;
+static int16_t page3d_view = 1;
+#endif
 
 // プレーヤーオブジェクト初期化
 static void init_player_car(volatile PLAYER_CAR *car, int16_t start_x, int16_t start_y, int16_t start_angle) {
@@ -60,6 +73,12 @@ static void init_player_car(volatile PLAYER_CAR *car, int16_t start_x, int16_t s
   car->cam_y = start_y;
   if (car->cam_y < CAM_Y_MIN) car->cam_y = CAM_Y_MIN;
   if (car->cam_y > CAM_Y_MAX) car->cam_y = CAM_Y_MAX;
+  
+#ifdef __3D_VIEW__  
+  car->cam_height = 32;
+  car->focal_length = 128;
+  car->horizon_y = 96;
+#endif
 
   // スプライト位置初期化
   car->sp_x = 128;    // 256x256 画面の中央絶対座標だけどスプライト特有のオフセットは考慮せず
@@ -74,6 +93,7 @@ static void init_player_car(volatile PLAYER_CAR *car, int16_t start_x, int16_t s
   car->is_drifting = 0;
   car->is_goal = 0;
 
+  // ラップごとのタイムとスコアの初期化(スタート時の時刻=vsyncカウントを記録するため敢えて1+5=6個持つ)
   for (int16_t i = 0; i < 6; i++) {
     car->lap_times[i] = 0;
     car->lap_scores[i] = 0;
@@ -226,6 +246,8 @@ static void reset_timer_a() {
 //
 static void __attribute__((interrupt)) refresh_screen() {
 
+#ifndef __3D_VIEW__
+
   // 自車スプライトの表示
 
   // グラフィック座標（car.sp_x）を、スプライト座標（+16）へ変換し、
@@ -236,7 +258,7 @@ static void __attribute__((interrupt)) refresh_screen() {
   // 32段階回転のどのパターンを使うか
   // 1方向ごとに4パターン使う
   uint16_t angle_32 = (car.angle >> 8) & 31;
-  uint16_t pattern_base = 0x100 + (angle_32 << 2);    // 内部的に256倍精度なのを32段階に戻してから4倍
+  uint16_t pattern_base = 0x100 + 4 + (angle_32 << 2);    // 内部的に256倍精度なのを32段階に戻してから4倍
 
   // 自車の表示 (スプライト0-4)
   SP_SCRL[  0 ] = sp_base_x;
@@ -262,7 +284,7 @@ static void __attribute__((interrupt)) refresh_screen() {
 
   // ドリフト中のタイヤスモーク
   if (car.is_drifting) {
-    uint16_t smoke_pattern = 0x200 + 128 + ((vsync_event.vsync_counter >> 2) & 3);
+    uint16_t smoke_pattern = 0x200 + 132 + ((vsync_event.vsync_counter >> 2) & 3);
     SP_SCRL[ 16 ] = sp_base_x + smoke_rear_left_x[angle_32];
     SP_SCRL[ 17 ] = sp_base_y + smoke_rear_left_y[angle_32];
     SP_SCRL[ 18 ] = smoke_pattern;
@@ -290,7 +312,7 @@ static void __attribute__((interrupt)) refresh_screen() {
     SP_SCRL[ 31 ] = 0;
   }  
 
-  // グラフィック画面のスクロール
+  // グラフィック画面のスクロール(2Dモード)
 
   // 物理的な「画面左上端」を求める（中心cam_x - 画面物理幅の半分181）
   int16_t screen_left = car.cam_x - CAM_X_MIN;
@@ -304,6 +326,20 @@ static void __attribute__((interrupt)) refresh_screen() {
   GR0_SCRL[0] = gvram_scrl_x & 1023;
   GR0_SCRL[1] = gvram_scrl_y & 1023;
 
+#else
+
+  // フレームバッファ転送(3Dモード)
+  memcpy256i(
+        (void*)(0xC00000 + (128 * 1024 * 2)), // 転送先：GVRAMのY=128ライン目の先頭アドレス
+        (void*)view3d_frame_buffers[page3d_view], // 転送元：描き終わったハイメモリバッファ
+        256, // 横256ドット (1ドット1ワード = 512バイト分)
+        64, // 縦128ライン
+        1024 * 2 // GVRAMの1ラインあたりのバイト幅（2 * 1024バイト＝512ドット分）
+    );
+
+  page3d_view = 1 - page3d_view;
+
+#endif
 
   // ハイスコア表示更新イベント
   if (vsync_event.event_refresh_hi_score) {
@@ -416,12 +452,12 @@ static void init_sp_pcg() {
 
   // PCGパターン(車体) 16x16が4つ * 32方向で128個使う
   for (int16_t i = 0; i < 128; i++) {
-    memcpy((void*)&PCG[i * 64], (void*)(&sp_pattern_data[i * 64]), 128);
+    memcpy((void*)&PCG[(i+4) * 64], (void*)(&sp_pattern_data[i * 64]), 128);
   }
 
   // PCGパターン(スモーク) 16x16が4つ
   for (int16_t i = 0; i < 4; i++) {
-    memcpy((void*)&PCG[(i+128) * 64], (void*)(&sp_smoke_pattern_data[i * 64]), 128);
+    memcpy((void*)&PCG[(i+132) * 64], (void*)(&sp_smoke_pattern_data[i * 64]), 128);
   }
   
   // スプライトパレット設定
@@ -430,7 +466,30 @@ static void init_sp_pcg() {
     PAL_BLK2[i] = sp_smoke_palette_data[i];
   }
 
-  *BG_CTRL = 0x200;   // SP/BG ON, BG1-BGTEXT0, BG0-BGTEXT1, BG1 OFF, BG0 OFF
+#ifdef __3D_VIEW__
+  // PCGパターン(空) 16x16が1つ
+  for (int16_t i = 0; i < 1; i++) {
+    memcpy((void*)&PCG[i * 64], (void*)(&sp_sky_pattern_data[i * 64]), 128);
+  }
+  
+  // スプライトパレット設定
+  for (int16_t i = 0; i < 16; i++) {
+    PAL_BLK3[i] = sp_sky_palette_data[i];
+  }
+
+  // BG TEXT1
+  for (int16_t y = 0; y < 64; y++) {
+    for (int16_t x = 0; x < 64; x++) {
+      if (y >= 0 && y <= 15) {
+        BG_TEXT1[ y * 64 + x ] = 0x300 + 1;    
+      } else {   
+        BG_TEXT1[ y * 64 + x ] = 0x300 + 0;
+      }
+    }
+  }
+#endif
+
+  *BG_CTRL = 0x203;   // SP/BG ON, BG1-BGTEXT0, BG0-BGTEXT1, BG1 OFF, BG0 ON
 }
 
 //
@@ -455,22 +514,25 @@ static void init_t_palette() {
 //
 //  ファイルをメモリに丸ごとロード
 //
-static uint8_t* load_file(const char* filename, uint32_t size) {
+static int32_t load_file(const char* filename, uint8_t* buf, uint32_t size) {
+
+  if (buf == NULL) return -1;
+
   FILE* fp = fopen(filename, "rb");
   if (fp == NULL) {
-    return NULL;
+    return -1;
   }
-  uint8_t* buf = (uint8_t*)malloc(size);
-  if (buf != NULL) {
-    size_t read_len = 0;
-    do {
-      size_t len = fread(buf + read_len, 1, size - read_len, fp);
-      if (len == 0) break;
-      read_len += len;
-    } while (read_len < size);
-    fclose(fp);
-  }
-  return buf;
+
+  size_t read_len = 0;
+  do {
+    size_t len = fread(buf + read_len, 1, size - read_len, fp);
+    if (len == 0) break;
+    read_len += len;
+  } while (read_len < size);
+
+  fclose(fp);
+
+  return 0;
 }
 
 // グラフィック画面OFF
@@ -678,6 +740,39 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   // エラーメッセージ初期化
   error_mes[0] = '\0';
 
+#ifdef __3D_VIEW__
+  // 3Dモードの時はハイメモリドライバ必須
+  if (!himem_isavailable()) {
+    strcpy(error_mes,"3D表示にはハイメモリドライバの組み込みが必要です。");
+    goto exit;
+  }
+
+  // 3D描画用ダブルバッファをハイメモリに確保
+  size_t view3d_buffer_size = 256 * 160 * sizeof(uint16_t);
+  view3d_frame_buffers[0] = himem_malloc(view3d_buffer_size);
+  view3d_frame_buffers[1] = himem_malloc(view3d_buffer_size);
+  if (view3d_frame_buffers[0] == NULL || view3d_frame_buffers[1] == NULL) {
+    strcpy(error_mes,"ハイメモリが不足しています。");
+    goto exit;
+  }
+
+  // いったんゼロクリアしておく
+  memset(view3d_frame_buffers[0],0,view3d_buffer_size);
+  memset(view3d_frame_buffers[1],0,view3d_buffer_size);
+
+  // レイキャスト用ルックアップテーブルをハイメモリにコピー
+  size_t raycast_lut_size = 512 * 128 * sizeof(RASTER_LINE_DATA);
+  RASTER_LINE_DATA* raycast_lut = himem_malloc(raycast_lut_size);
+  if (raycast_lut == NULL) {
+    strcpy(error_mes,"ハイメモリが不足しています。");
+    goto exit;    
+  }
+  if (load_file("RAY3D.LUT", (void*)raycast_lut, raycast_lut_size) != 0) {
+    strcpy(error_mes,"RAY3D.LUTファイルの読み込みに失敗しました。");
+    goto exit;
+  }
+#endif
+
   // AJOY.X常駐チェック
   if (ajoy_isavailable()) {
     use_analog_controller = 1;
@@ -731,16 +826,38 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   put_loading_messages();
 
   // コース物理データのロード
-  course_data = load_file(COURSE_PHYS_DATA_FILE, PHYS_W * PHYS_H);
+  course_data = malloc(32 + PHYS_W * PHYS_H);
   if (course_data == NULL) {
+    strcpy(error_mes, "メインメモリが不足しています。");
+    goto exit;
+  }
+  if (load_file(COURSE_PHYS_DATA_FILE, course_data, 32 + PHYS_W * PHYS_H) != 0) {
     strcpy(error_mes, "コースデータ(.DAT)の読み込みに失敗しました。");
     goto exit;
   }
-  physical_map = course_data + 32;    // 専用32バイトはヘッダ それ以降に物理マップデータ(1440x1024)
 
+#ifndef __3D_VIEW__
+  physical_map = course_data + 32;    // 専用32バイトはヘッダ それ以降に物理マップデータ(1440x1024)
+#else
+  physical_map = himem_malloc(2048 * 1024 * sizeof(uint8_t));
+  if (physical_map == NULL) {
+    strcpy(error_mes, "ハイメモリが不足しています。");
+    goto exit;
+  }
+  for (int16_t i = 0; i < 1024; i++) {
+    memcpy(physical_map + 2048 * i, course_data + 32 + 1440 * i, 1440);
+    memset(physical_map + 2048 * i + 1440, 1, 2048 - 1440);
+  }
+#endif
+
+#ifndef __3D_VIEW__
   // コースグラフィックデータのロード
-  grp_data = load_file(COURSE_DISP_DATA_FILE, DISP_W * (DISP_W / 2));
+  grp_data = malloc(DISP_H * (DISP_W / 2));
   if (grp_data == NULL) {
+    strcpy(error_mes, "メインメモリが不足しています。");
+    goto exit;
+  }
+  if (load_file(COURSE_DISP_DATA_FILE, grp_data, DISP_H * (DISP_W / 2)) != 0) {
     strcpy(error_mes, "コースグラフィックデータ(.GRP)の読み込みに失敗しました。");
     goto exit;
   }
@@ -750,6 +867,7 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   deploy_graphics(grp_data);
   free(grp_data); // 表示用の一時バッファは用済みなので解放
   grp_data = NULL;
+#endif
 
   // ゲームループ
 game_start:
@@ -833,7 +951,11 @@ game_start:
     // ----------------------------------------------------------------
     int16_t map_x = car.x >> 4;
     int16_t map_y = car.y >> 4;
+#ifndef __3D_VIEW__
     uint32_t map_index = ((uint32_t)map_y * 1440) + map_x;
+#else
+    uint32_t map_index = (map_y << 11) + map_x;
+#endif
     uint8_t surface_attr = physical_map[map_index] & 7;
 
     int16_t speed_limit = MAX_SPEED << 8; // デフォルトの道路上での最高速度
@@ -1147,6 +1269,57 @@ game_start:
     }
 
 skip_physics:
+#ifdef __3D_VIEW__
+    {
+        uint16_t *line_ptr = view3d_frame_buffers[page3d_calc];
+        
+        // 角度の分解能を 512方向（0〜511）に拡張
+        uint16_t angle_512 = (car.angle >> 4) & 511;
+
+        // 他の物理（16倍精度）を描画用に一時的に「256倍精度」に変換（左4シフト）
+        int32_t cam_x_256 = car.x << 4;
+        int32_t cam_y_256 = car.y << 4;
+
+        // 💡 LUTの1角度あたりのサイズは「128ライン」固定なので、オフセットは常に << 7
+        const RASTER_LINE_DATA *angle_lut_base = raycast_lut + (angle_512 << 7);
+
+        // 💡 オプション設定（例: config.interlace が 1 ならインターレース、0 なら通常）
+        int16_t line_step  = 2; //(config.interlace) ? 2 : 1;  // ループの進み幅
+        int16_t loop_count = 64; //(config.interlace) ? 64 : 128; // 縦ループを回す回数
+
+        // 縦方向のループ
+        for (int16_t i = 0; i < loop_count; i++) {
+            
+            // 💡 インターレース時は i * 2 のラインデータを引くことで、
+            // 128ライン用のLUTから綺麗に1ライン飛ばしでサンプリングできます！
+            int16_t line_idx = i * line_step;
+            const RASTER_LINE_DATA *lut = angle_lut_base + line_idx;
+
+            // 256倍精度同士の完璧な加算
+            int32_t curr_x_256 = cam_x_256 + lut->start_rel_x;
+            int32_t curr_y_256 = cam_y_256 + lut->start_rel_y;
+            int32_t step_x_256 = lut->step_x;
+            int32_t step_y_256 = lut->step_y;
+
+            // 内側の横ループ（256回）
+            // 横2048パディングの恩恵で、ここは極限まで無駄が削ぎ落とされています
+            for (int16_t screen_x = 0; screen_x < 256; screen_x++) {
+                
+                int32_t map_x = curr_x_256 >> 8;
+                int32_t map_y = curr_y_256 >> 8;
+
+                // 2048x1024の超高速ビットマスク＆シフト
+                *line_ptr++ = physical_map[((map_y & 1023) << 11) + (map_x & 2047)];
+
+                curr_x_256 += step_x_256;
+                curr_y_256 += step_y_256;
+            }
+        }
+
+        page3d_calc = 1 - page3d_calc;
+    }
+#endif
+
     // 物理計算の画面描画追い越しガード
     while (vsync_event.vsync_counter == current_vsync) {
     }
@@ -1180,6 +1353,30 @@ exit:
     _iocs_vdispst(0, 0, 0);
     vsync = 0;
   }
+
+#ifdef __3D_VIEW__
+  // 物理バッファ解放
+  if (physical_map != NULL) {
+    himem_free(physical_map);
+    physical_map = NULL;
+  }
+
+  // レイキャストLUTバッファ解放
+  if (raycast_lut != NULL) {
+    himem_free(raycast_lut);
+    raycast_lut = NULL;
+  }
+
+  // 3Dバッファ解放
+  if (view3d_frame_buffers[0] != NULL) {
+    himem_free(view3d_frame_buffers[0]);
+    view3d_frame_buffers[0] = NULL;
+  }
+  if (view3d_frame_buffers[1] != NULL) {
+    himem_free(view3d_frame_buffers[1]);
+    view3d_frame_buffers[1] = NULL;
+  }
+#endif
 
   // バッファ解放
   if (course_data != NULL) {
