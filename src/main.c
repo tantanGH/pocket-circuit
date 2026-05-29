@@ -1041,7 +1041,7 @@ game_start:
       // デジタルジョイパッド
       uint8_t j = *((volatile uint8_t*)(0x0e9a001));
       throttle_raw = (!(j & 0x40)) ? 0 : (!(j & 0x20)) ? 255 : 128;
-      lever_raw = (!(j & 4)) ? -(MAX_SPEED) : (!(j & 8)) ? MAX_SPEED : 0;
+      lever_raw = (!(j & 4)) ? -127 : (!(j & 8)) ? 127 : 0;
       if (!(j & 0x40)) { is_braking = 1; }
     }
     

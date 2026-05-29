@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define VERSION "0.3.5 (2026/05/29)"
+#define VERSION "0.3.6 (2026/05/29)"
 
 // コースデータファイル名
 #define COURSE_PHYS_DATA_FILE  "COURSE1.DAT"
@@ -95,7 +95,7 @@ typedef struct {
 
 } VSYNC_EVENT;
 
-#define RAYCAST_DATA_FILE "RAYCAST.LUT"
+#define RAYCAST_DATA_FILE "RAY128.LUT"
 
 typedef struct {
   int32_t start_rel_x;    // 画面左端のサンプリング開始相対座標（X成分）
