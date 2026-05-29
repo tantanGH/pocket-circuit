@@ -7,18 +7,17 @@ endif
 .SUFFIXES:
 
 # バージョン
-VERSION = 021
+VERSION = 035
 
 # 実行ファイル名
-TARGET_FILE     = POCKETCT.X
-TARGET_FILE_000 = POCKETCT3D.X
-TARGET_FILE_060 = POCKETCT3D060.X
+TARGET_FILE_000 = POCKETCT.X
+TARGET_FILE_060 = POCKETCT060.X
 
 # ドキュメントファイル名
 DOCUMENT_FILE = POCKETCT.TXT
 
 # アセットファイル名
-ASSET_FILES = COURSE1.DAT COURSE1.GRP
+ASSET_FILES = COURSE1.DAT COURSE1.GRP RAYCAST.LUT
 
 # 配布パッケージファイル名 
 PACKAGE_FILE = ../PCTCT$(VERSION).ZIP
@@ -43,59 +42,45 @@ C_SRCS = main.c
 ASM_SRCS = 
 
 # *.h source files
-HEADER_SRCS = keyboard.h crtc.h pattern.h smoke.h gpalette.h sincos.h memcpy256.h pocketct.h
+HEADER_SRCS = keyboard.h crtc.h pcg_car.h pcg_smoke.h pcg_sky.h gpalette.h sincos.h pocketct.h
 
 # リンク対象のライブラリファイル
-LIBS = -lajoy
-LIBS_000 = -lajoy -lhimem
-LIBS_060 = -lajoy -lhimem
+LIBS = -lajoy -lhimem
 
 # 中間ファイル生成用ディレクトリ
-INTERMEDIATE_DIR     = _build
 INTERMEDIATE_DIR_000 = _build000
 INTERMEDIATE_DIR_060 = _build060
 
 # オブジェクトファイル
-OBJS     =	$(addprefix $(INTERMEDIATE_DIR)/,$(patsubst %.c,%.o,$(C_SRCS))) \
-	   	    $(addprefix $(INTERMEDIATE_DIR)/,$(patsubst %.s,%.o,$(ASM_SRCS)))
 OBJS_000 =	$(addprefix $(INTERMEDIATE_DIR_000)/,$(patsubst %.c,%.o,$(C_SRCS))) \
 	   	    $(addprefix $(INTERMEDIATE_DIR_000)/,$(patsubst %.s,%.o,$(ASM_SRCS)))
 OBJS_060 =	$(addprefix $(INTERMEDIATE_DIR_060)/,$(patsubst %.c,%.o,$(C_SRCS))) \
 	   	    $(addprefix $(INTERMEDIATE_DIR_060)/,$(patsubst %.s,%.o,$(ASM_SRCS)))
 
 # コンパイルフラグ
-COMMON_FLAGS     = -m68000 -O2 -msoft-float -specs=nano.specs $(INCLUDE_FLAGS) -fno-defer-pop
-CFLAGS     = $(COMMON_FLAGS) -D__2D_VIEW__
 COMMON_FLAGS_000 = -m68000 -O2 -msoft-float -specs=nano.specs $(INCLUDE_FLAGS) -fno-defer-pop
-CFLAGS_000 = $(COMMON_FLAGS_000) -D__3D_VIEW__
+CFLAGS_000 = $(COMMON_FLAGS_000)
 COMMON_FLAGS_060 = -m68060 -O2 -msoft-float -specs=nano.specs $(INCLUDE_FLAGS) -fno-defer-pop
-CFLAGS_060 = $(COMMON_FLAGS_060) -D__3D_VIEW__
+CFLAGS_060 = $(COMMON_FLAGS_060)
 
 # デフォルトのターゲット
-all : ${INTERMEDIATE_DIR}/$(TARGET_FILE) ${INTERMEDIATE_DIR_000}/$(TARGET_FILE_000) ${INTERMEDIATE_DIR_060}/$(TARGET_FILE_060)
+all : ${INTERMEDIATE_DIR_000}/$(TARGET_FILE_000) ${INTERMEDIATE_DIR_060}/$(TARGET_FILE_060)
 
 # 中間生成物の削除
 clean : 
 	rm -f $(PACKAGE_FILE)
-	rm -rf $(INTERMEDIATE_DIR)
 	rm -rf $(INTERMEDIATE_DIR_000)
 	rm -rf $(INTERMEDIATE_DIR_060)
 
 # 実行ファイルの生成
-${INTERMEDIATE_DIR}/$(TARGET_FILE) : $(OBJS)
-	mkdir -p $(INTERMEDIATE_DIR)
-	$(CC) $(COMMON_FLAGS) $(LDFLAGS) -o ${INTERMEDIATE_DIR}/${TARGET_FILE} $(OBJS) $(LIBS)
 ${INTERMEDIATE_DIR_000}/$(TARGET_FILE_000) : $(OBJS_000)
 	mkdir -p $(INTERMEDIATE_DIR_000)
-	$(CC) $(COMMON_FLAGS_000) $(LDFLAGS) -o ${INTERMEDIATE_DIR_000}/${TARGET_FILE_000} $(OBJS_000) $(LIBS_000)
+	$(CC) $(COMMON_FLAGS_000) $(LDFLAGS) -o ${INTERMEDIATE_DIR_000}/${TARGET_FILE_000} $(OBJS_000) $(LIBS)
 ${INTERMEDIATE_DIR_060}/$(TARGET_FILE_060) : $(OBJS_060)
 	mkdir -p $(INTERMEDIATE_DIR_060)
-	$(CC) $(COMMON_FLAGS_060) $(LDFLAGS) -o ${INTERMEDIATE_DIR_060}/${TARGET_FILE_060} $(OBJS_060) $(LIBS_060)
+	$(CC) $(COMMON_FLAGS_060) $(LDFLAGS) -o ${INTERMEDIATE_DIR_060}/${TARGET_FILE_060} $(OBJS_060) $(LIBS)
 
 # *.c ソースのコンパイル
-$(INTERMEDIATE_DIR)/%.o : %.c Makefile $(HEADER_SRCS)
-	mkdir -p $(INTERMEDIATE_DIR)
-	$(CC) $(CFLAGS) -c $*.c -o $(INTERMEDIATE_DIR)/$*.o
 $(INTERMEDIATE_DIR_000)/%.o : %.c Makefile $(HEADER_SRCS)
 	mkdir -p $(INTERMEDIATE_DIR_000)
 	$(CC) $(CFLAGS_000) -c $*.c -o $(INTERMEDIATE_DIR_000)/$*.o
@@ -108,6 +93,5 @@ package:
 	zip -j ${PACKAGE_FILE} \
 			${DOCUMENT_FILE} \
 			${ASSET_FILES} \
-			${INTERMEDIATE_DIR}/${TARGET_FILE} \
 			${INTERMEDIATE_DIR_000}/${TARGET_FILE_000} \
 			${INTERMEDIATE_DIR_060}/${TARGET_FILE_060}
