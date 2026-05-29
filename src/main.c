@@ -374,7 +374,11 @@ static void __attribute__((interrupt)) refresh_screen() {
   // コース外れ警告消去カウントダウン
   if (vsync_event.wrong_way_counter > 0) {
     if (vsync_event.wrong_way_counter == 1) {
-      put_text_8x8(96,48,1,1,"         ");
+      if (vsync_event.view3d) {
+        put_text_8x8(96,48,2,1,"         ");
+      } else {
+        put_text_8x8(96,48,1,1,"         ");        
+      }
     }
     vsync_event.wrong_way_counter--;
   }
@@ -420,7 +424,7 @@ static void __attribute__((interrupt)) refresh_screen() {
 //
 //  PCG / スプライトの初期化 (スーパーバイザモードになっていること)
 //
-static void init_sp_pcg(int16_t view3d) {
+static void init_sp_pcg() {
 
   // VBLANK待ち
   WAIT_VBLANK;
@@ -464,24 +468,26 @@ static void init_sp_pcg(int16_t view3d) {
     PAL_BLK3[i] = sp_sky_palette_data[i];
   }
 
-  if (view3d) {
-    // 3Dモードの時は BG TEXT1 に空をセットする
-    for (int16_t y = 0; y < 64; y++) {
-      for (int16_t x = 0; x < 64; x++) {
-        if (y >= 0 && y <= 13) {
-          BG_TEXT1[ y * 64 + x ] = 0x300 + 1;   
-        } else if (y == 14) {
-          BG_TEXT1[ y * 64 + x ] = 0x300 + 2;         
-        } else if (y == 15) {
-          BG_TEXT1[ y * 64 + x ] = 0x300 + 3;   
-        } else {   
-          BG_TEXT1[ y * 64 + x ] = 0x300 + 0;
-        }
+  *BG_CTRL = 0x202;   // SP/BG ON, BG1-BGTEXT0, BG0-BGTEXT1, BG1 OFF, BG0 OFF
+}
+
+//
+//  BG TEXT1画面の空の初期化
+//
+static void init_bg_sky() {
+  for (int16_t y = 0; y < 64; y++) {
+    for (int16_t x = 0; x < 64; x++) {
+      if (y >= 0 && y <= 13) {
+        BG_TEXT1[ y * 64 + x ] = 0x300 + 1;   
+      } else if (y == 14) {
+        BG_TEXT1[ y * 64 + x ] = 0x300 + 2;         
+      } else if (y == 15) {
+        BG_TEXT1[ y * 64 + x ] = 0x300 + 3;   
+      } else {   
+        BG_TEXT1[ y * 64 + x ] = 0x300 + 0;
       }
     }
   }
-
-  *BG_CTRL = 0x202;   // SP/BG ON, BG1-BGTEXT0, BG0-BGTEXT1, BG1 OFF, BG0 OFF
 }
 
 //
@@ -572,22 +578,91 @@ static void deploy_graphics(const uint8_t* packed_grp) {
 }
 
 //
-//  NOW LOADING の表示
+//  描画モードの選択
 //
-static void put_loading_messages(int16_t use_analog_controller) {
+static int16_t select_view_mode(int16_t use_analog_controller, int16_t use_high_memory) {
+
+  int16_t view3d = 0;
+
   put_text_8x8(0,0,1,1,"POCKET CIRCUIT PRO-68K");
   put_text_8x8(0,16,1,1,"VERSION "VERSION);
   usleep(200000);
+
   if (use_analog_controller) {
     put_text_8x8(0,32,3,1," - AJOY.X WAS FOUND.");
     put_text_8x8(0,48,3,1," - USE AN ANALOG CONTROLLER.");
-    usleep(200000);
   } else {
     put_text_8x8(0,32,3,1," - AJOY.X WAS NOT FOUND.");
     put_text_8x8(0,48,3,1," - USE A DIGITAL CONTROLLER.");
-    usleep(200000);    
   }
-  put_text_8x8(0,64,3,1," - LOADING COURSE DATA ...");
+  usleep(200000);    
+
+  if (use_high_memory) {
+    put_text_8x8(0,64,3,1," - HIMEM.SYS WAS FOUND.");
+    put_text_8x8(0,88,1,1,"SELECT VIEW MODE:");
+
+    // 入力待ち
+    int16_t flip = 1;
+    int16_t pushed = 0;
+    for (;;) {
+      if (_iocs_b_keysns() != 0) {
+        int16_t scan_code = _iocs_b_keyinp() >> 8;
+        if (scan_code == KEY_SCAN_CODE_LEFT || scan_code == KEY_SCAN_CODE_RIGHT) {
+          if (!pushed) flip = 1;
+        } else if (scan_code == KEY_SCAN_CODE_UP || scan_code == KEY_SCAN_CODE_DOWN) {
+          if (!pushed) flip = 1;
+        } else if (scan_code == KEY_SCAN_CODE_CR || scan_code == KEY_SCAN_CODE_ENTER || scan_code == KEY_SCAN_CODE_SPACE) {
+          break;
+        } else if (scan_code == KEY_SCAN_CODE_9) {
+          view3d = 2;   // 非インターレース隠しコマンド
+          break;
+        } else if (scan_code == KEY_SCAN_CODE_ESC) {
+          return -1;
+        } else {
+          pushed = 0;
+        }
+      }
+      if (use_analog_controller) {
+        ajoy_read(ajoy_buffer);
+        if (ajoy_buffer[0] < 100 || ajoy_buffer[0] > 156) {
+          if (!pushed) flip = 1;
+        } else if (ajoy_buffer[1] < 100 || ajoy_buffer[1] > 156) {
+          if (!pushed) flip = 1;
+        } else if (ajoy_buffer[2] < 100 || ajoy_buffer[2] > 156) {
+          if (!pushed) flip = 1;
+        } else if ((ajoy_buffer[4] & 0xfff) != 0x0fff) {
+          break;
+        } else {
+          pushed = 0;
+        }
+      } else {
+        uint8_t j = _iocs_joyget(0);
+        if ((j & 0x0f) != 0x0f) {
+          if (!pushed) flip = 1;
+        } else if ((j & 0x60) != 0x60) {
+          break;
+        } else {
+          pushed = 0;
+        }
+      }
+      if (flip) {
+        view3d = 1 - view3d;
+        if (view3d) {
+          put_text_8x8(8*18,88,2,1,"3D VIEW");
+        } else {
+          put_text_8x8(8*18,88,2,1,"2D VIEW");
+        }
+        flip = 0;
+        pushed = 1;
+      }
+    }
+
+  } else {
+    put_text_8x8(0,64,3,1," - HIMEM.SYS WAS NOT FOUND.");
+    put_text_8x8(0,80,3,1," - USE 2D VIEW MODE.");
+  }
+
+  return view3d;
 }
 
 //
@@ -718,7 +793,7 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   error_mes[0] = '\0';
 
   // ハイメモリが使えるか
-  int16_t use_himem = himem_isavailable();
+  int16_t use_high_memory = himem_isavailable();
 
   // AJOY.X常駐チェック
   int16_t use_analog_controller = ajoy_isavailable();
@@ -749,7 +824,7 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   init_font_8x8();
 
   // SP/PCGの初期化
-  init_sp_pcg(view3d);
+  init_sp_pcg();
 
   // グラフィックパレット初期化
   init_g_palette();
@@ -770,10 +845,12 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   // 3Dレイキャストデータへのポインタ
   RASTER_LINE_DATA* raycast_lut = NULL;
 
-  // NOW LOADING
-  put_loading_messages(use_analog_controller);
+  // 描画モードの選択
+  view3d = select_view_mode(use_analog_controller, use_high_memory);
+  if (view3d < 0) goto exit;
 
-  // コース物理データのロードバッファ確保
+  // コースデータの読み込み
+  put_text_8x8(0,112,3,1,"LOADING COURSE DATA ...");
   course_data = malloc(32 + PHYS_W * PHYS_H);
   if (course_data == NULL) {
     strcpy(error_mes, "メインメモリが不足しています。");
@@ -807,19 +884,29 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
 
   } else {
 
-    // レイキャスト用ルックアップテーブルをハイメモリにコピー
+    // レイキャスト用ルックアップテーブルをメインメモリに読み込み
     size_t raycast_lut_size = 512 * 128 * sizeof(RASTER_LINE_DATA);
+    grp_data = malloc(raycast_lut_size);
+    if (grp_data == NULL) {
+      strcpy(error_mes,"メインメモリが不足しています。");
+      goto exit;
+    }
+    if (load_file(RAYCAST_DATA_FILE, grp_data, raycast_lut_size) != 0) {
+      strcpy(error_mes,RAYCAST_DATA_FILE"ファイルの読み込みに失敗しました。");
+      goto exit;
+    }
+
+    // レイキャスト用ルックアップテーブルをハイメモリにコピー
     raycast_lut = himem_malloc(raycast_lut_size);
     if (raycast_lut == NULL) {
       strcpy(error_mes,"ハイメモリが不足しています。");
       goto exit;    
     }
-    if (load_file(RAYCAST_DATA_FILE, (void*)raycast_lut, raycast_lut_size) != 0) {
-      strcpy(error_mes,RAYCAST_DATA_FILE"ファイルの読み込みに失敗しました。");
-      goto exit;
-    }
+    memcpy((void*)raycast_lut, grp_data, raycast_lut_size);
+    free(grp_data);
+    grp_data = NULL;
 
-    // 物理マップを2048境界にパディングしながら展開
+    // 物理マップを2048境界にパディングしながらハイメモリに展開
     physical_map = himem_malloc(PHYS_W * PHYS_H * sizeof(uint8_t));
     if (physical_map == NULL) {
       strcpy(error_mes, "ハイメモリが不足しています。");
@@ -842,7 +929,10 @@ game_start:
   graphic_on();
 
   // BG ON (3D時のみ)
-  if (view3d) bg_on();
+  if (view3d) {
+    init_bg_sky();
+    bg_on();
+  }
 
   // VSYNCイベントステータス初期化
   init_vsync_event(&vsync_event, view3d);
@@ -896,13 +986,20 @@ game_start:
       }
     }
   
-    // 既にゴール済みなら車体を右へすいーっと動かす
+    // 既にゴール済みなら車体を強制移動
     if (car.is_goal) {
-      car.x += 6 << 4;
-      car.sp_x += 4;
-      if (car.sp_x > 256 + 32) {
-        // 画面外に出たらゲーム終了、リザルト確認へ
-        game_over = 1;
+      if (view3d) {
+        car.x += 6 << 4;
+        if (car.x > (s_x + 500)<<4) {
+          // (3D) スタート位置より500座標移動したら終了
+          game_over = 1;
+        }
+      } else {
+        car.sp_x += 4;
+        if (car.sp_x > 256 + 32) {
+          // (2D) SPが画面外に出たらゲーム終了、リザルト確認へ
+          game_over = 1;
+        }
       }
       goto skip_physics;  // このフレームでは物理を動かさない
     }
@@ -932,6 +1029,7 @@ game_start:
     // ----------------------------------------------------------------
     int16_t throttle_raw;
     int16_t lever_raw;
+    int16_t is_braking = 0; // ブレーキフラグ
 
     // スロットル生データ(0-255)取得
     if (use_analog_controller) {
@@ -942,14 +1040,23 @@ game_start:
     } else {
       // デジタルジョイパッド
       uint8_t j = *((volatile uint8_t*)(0x0e9a001));
-      throttle_raw = (!(j & 0x20)) ? 255 : 0;
+      throttle_raw = (!(j & 0x40)) ? 0 : (!(j & 0x20)) ? 255 : 128;
       lever_raw = (!(j & 4)) ? -(MAX_SPEED) : (!(j & 8)) ? MAX_SPEED : 0;
+      if (!(j & 0x40)) { is_braking = 1; }
     }
     
     // 255 - MAX_SPEED 以上のとき、手前に引かれている（アクセルON）と判定
     int16_t accel_amount = 0;
+    int16_t neutral_zone = 255 - MAX_SPEED; // ニュートラル（アクセルOFF・ブレーキOFF）の基準点
     if (throttle_raw >= (255 - MAX_SPEED)) {
       accel_amount = throttle_raw - (255 - MAX_SPEED); // 引くほど値が大きくなる（0 〜 MAX_SPEED）
+    }
+    if (throttle_raw > neutral_zone) {
+      // 手前に引かれている - アクセルON
+      accel_amount = throttle_raw - neutral_zone;
+    } else if (throttle_raw < (neutral_zone - 50)) {
+      //  前方に押し込まれている - ブレーキON
+      is_braking = 1;
     }
 
     int16_t target_speed = accel_amount << 8;     // 共通レンジにつき剰余省略
@@ -961,37 +1068,31 @@ game_start:
     // 3. 実際の車の速度（car.speed）を目標速度に向けて近づける（慣性）
     // ----------------------------------------------------------------
 
-    // 現在の速度と目標速度の差分を計算
     int16_t speed_diff = target_speed - car.speed;
-    if (speed_diff > 0) {
 
-      // [加速中]
-
-      // 加速トルク
-      int16_t torque = (speed_diff >> 3); // 基本は差分比例
-        
-      // 車の速度が極端に遅いときはスタック防止用に最低保証トルクを上乗せする
-      if (car.speed < (16 << 8)) {
-        torque += (1 << 8);
-      } else {
-        torque += 1;        // 通常域は最低でも「+1」する
-      }
-
+    if (speed_diff > 0 && !is_braking) {
+      // [加速中]（ブレーキONのときは加速しない）
+      int16_t torque = (speed_diff >> 3);
+      if (car.speed < (16 << 8)) { torque += (1 << 8); } else { torque += 1; }
       car.speed += torque;
-      if (car.speed > target_speed) {
-        // リミッター
-        car.speed = target_speed;
+      if (car.speed > target_speed) car.speed = target_speed;
+
+    } else {
+      // 減速中またはブレーキ中
+      if (is_braking) {
+        // 急制動 
+        car.speed += (speed_diff >> 4) - 16;
+        // 完全停止で止まるようにクリップ
+        if (car.speed < 0) car.speed = 0;        
+      } else if (target_speed == speed_limit && car.speed > speed_limit) {
+        // 【路面リミッター（グラベル等）】そこそこ強めのブレーキ
+        car.speed += (speed_diff >> 4) - 4;
+        if (car.speed < target_speed) car.speed = target_speed;
+      } else {
+        // 【通常のエンブレ（中央の空走ゾーン）】スーッと滑らかに滑るように減速
+        car.speed += (speed_diff >> 6);
+        if (car.speed < target_speed) car.speed = target_speed;
       }
-
-    } else if (speed_diff < 0) {
-
-      // [減速中]   
-      car.speed += (speed_diff >> 5) - 4;
-      if (car.speed < target_speed) {
-        // リミッター
-        car.speed = target_speed;
-      }
-
     }
 
     // ----------------------------------------------------------------
@@ -1250,6 +1351,11 @@ skip_physics:
       // インターレース
       int16_t line_step  = 2;
       int16_t loop_count = 64;
+      if (view3d == 2) {
+        // 非インターレース
+        line_step = 1;
+        loop_count = 128;
+      }
 
       // 縦方向のループ
       for (int16_t i = 0; i < loop_count; i++) {
@@ -1275,7 +1381,6 @@ skip_physics:
 
           // 2048x1024のビットマスク＆シフト
           *line_ptr++ = physical_map[((map_y & 1023) << 11) + (map_x & 2047)];
-
         }
 
         line_ptr += line_step * 1024 - 256;
