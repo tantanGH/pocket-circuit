@@ -33,6 +33,7 @@ volatile static uint16_t* GR0_SCRL   = (uint16_t*)0XE80018;
 
 volatile static uint16_t* PAL_BLK1   = (uint16_t*)0xE82220;
 volatile static uint16_t* PAL_BLK2   = (uint16_t*)0xE82240;
+volatile static uint16_t* PAL_BLK3   = (uint16_t*)0xE82260;
 
 volatile static uint16_t* SP_SCRL    = (uint16_t*)0xEB0000;
 volatile static uint16_t* BG0_SCRL   = (uint16_t*)0xEB0800;

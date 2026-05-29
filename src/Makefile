@@ -7,16 +7,17 @@ endif
 .SUFFIXES:
 
 # バージョン
-VERSION = 021
+VERSION = 036
 
 # 実行ファイル名
 TARGET_FILE_000 = POCKETCT.X
+TARGET_FILE_060 = POCKETCT060.X
 
 # ドキュメントファイル名
 DOCUMENT_FILE = POCKETCT.TXT
 
 # アセットファイル名
-ASSET_FILES = COURSE1.DAT COURSE1.GRP
+ASSET_FILES = COURSE1.DAT COURSE1.GRP RAY128.LUT
 
 # 配布パッケージファイル名 
 PACKAGE_FILE = ../PCTCT$(VERSION).ZIP
@@ -28,10 +29,11 @@ AS = m68k-xelf-as
 # ヘッダ検索パス
 INCLUDE_FLAGS = -I${ELF2X68K_DIR}/lib/gcc/m68k-elf/13.4.0/include \
 				-I${ELF2X68K_DIR}/m68k-elf/include \
-				-I../libs/libajoy/include
+				-I../libs/libajoy/include \
+				-I../libs/libhimem/include 
 
 # リンカオプションとライブラリ検索パス
-LDFLAGS =  -Wl,-s -Wl,--gc-sections -L../libs/libajoy/lib
+LDFLAGS =  -Wl,-s -Wl,--gc-sections -L../libs/libajoy/lib -L../libs/libhimem/lib
 
 # *.c ソースファイル
 C_SRCS = main.c
@@ -40,21 +42,26 @@ C_SRCS = main.c
 ASM_SRCS = 
 
 # *.h source files
-HEADER_SRCS = keyboard.h crtc.h pattern.h smoke.h gpalette.h sincos.h pattern.h pocketct.h
+HEADER_SRCS = keyboard.h crtc.h pcg_car.h pcg_smoke.h pcg_sky.h gpalette.h sincos.h pocketct.h
 
 # リンク対象のライブラリファイル
-LIBS = -lajoy
+LIBS = -lajoy -lhimem
 
 # 中間ファイル生成用ディレクトリ
 INTERMEDIATE_DIR_000 = _build000
+INTERMEDIATE_DIR_060 = _build060
 
 # オブジェクトファイル
 OBJS_000 =	$(addprefix $(INTERMEDIATE_DIR_000)/,$(patsubst %.c,%.o,$(C_SRCS))) \
 	   	    $(addprefix $(INTERMEDIATE_DIR_000)/,$(patsubst %.s,%.o,$(ASM_SRCS)))
+OBJS_060 =	$(addprefix $(INTERMEDIATE_DIR_060)/,$(patsubst %.c,%.o,$(C_SRCS))) \
+	   	    $(addprefix $(INTERMEDIATE_DIR_060)/,$(patsubst %.s,%.o,$(ASM_SRCS)))
 
 # コンパイルフラグ
 COMMON_FLAGS_000 = -m68000 -O2 -msoft-float -specs=nano.specs $(INCLUDE_FLAGS) -fno-defer-pop
 CFLAGS_000 = $(COMMON_FLAGS_000)
+COMMON_FLAGS_060 = -m68060 -O2 -msoft-float -specs=nano.specs $(INCLUDE_FLAGS) -fno-defer-pop
+CFLAGS_060 = $(COMMON_FLAGS_060)
 
 # デフォルトのターゲット
 all : ${INTERMEDIATE_DIR_000}/$(TARGET_FILE_000) ${INTERMEDIATE_DIR_060}/$(TARGET_FILE_060)
@@ -69,15 +76,22 @@ clean :
 ${INTERMEDIATE_DIR_000}/$(TARGET_FILE_000) : $(OBJS_000)
 	mkdir -p $(INTERMEDIATE_DIR_000)
 	$(CC) $(COMMON_FLAGS_000) $(LDFLAGS) -o ${INTERMEDIATE_DIR_000}/${TARGET_FILE_000} $(OBJS_000) $(LIBS)
+${INTERMEDIATE_DIR_060}/$(TARGET_FILE_060) : $(OBJS_060)
+	mkdir -p $(INTERMEDIATE_DIR_060)
+	$(CC) $(COMMON_FLAGS_060) $(LDFLAGS) -o ${INTERMEDIATE_DIR_060}/${TARGET_FILE_060} $(OBJS_060) $(LIBS)
 
 # *.c ソースのコンパイル
 $(INTERMEDIATE_DIR_000)/%.o : %.c Makefile $(HEADER_SRCS)
 	mkdir -p $(INTERMEDIATE_DIR_000)
 	$(CC) $(CFLAGS_000) -c $*.c -o $(INTERMEDIATE_DIR_000)/$*.o
+$(INTERMEDIATE_DIR_060)/%.o : %.c Makefile $(HEADER_SRCS)
+	mkdir -p $(INTERMEDIATE_DIR_060)
+	$(CC) $(CFLAGS_060) -c $*.c -o $(INTERMEDIATE_DIR_060)/$*.o
 
 # 配布用パッケージ作成
 package:
 	zip -j ${PACKAGE_FILE} \
 			${DOCUMENT_FILE} \
+			${ASSET_FILES} \
 			${INTERMEDIATE_DIR_000}/${TARGET_FILE_000} \
-			${ASSET_FILES}
+			${INTERMEDIATE_DIR_060}/${TARGET_FILE_060}

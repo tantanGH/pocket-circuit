@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define VERSION "0.2.1 (2026/05/26)"
+#define VERSION "0.3.6 (2026/05/29)"
 
 // コースデータファイル名
 #define COURSE_PHYS_DATA_FILE  "COURSE1.DAT"
@@ -45,6 +45,11 @@ typedef struct {
   int16_t sp_x;             // 車体中心の表示画面上のX座標(0 ~ 255) *スプライト画面のオフセット(16)考慮なし
   int16_t sp_y;             // 車体中心の表示画面上のY座標(0 ~ 255) *スプライト画面のオフセット(16)考慮なし
 
+  // 3D描画用パラメータ
+  int16_t cam_height;       // カメラの高さ (H) ：固定値(例:32など)またはジャンプ等で変動
+  int16_t focal_length;     // 焦点距離 (F) ：視野角の広さ。基本固定値(例:128など)
+  int16_t horizon_y;        // 水平線の画面Y座標：基本固定値(例:96)。ここより下を3D描画する
+
   // ラップカウント用
   uint32_t score;           // 現在のトータルスコア
   int16_t lap_count;        // 現在の周回数（1からスタート）
@@ -77,6 +82,11 @@ typedef struct {
   int16_t event_refresh_wrong_way;      // コース外れ警告表示依頼用
   int16_t event_refresh_goal;           // ゴール表示依頼用
 
+  // 3D描画用
+  int16_t view3d;                       // 3D表示するか
+  int16_t page3d_calc;                  // 現在更新すべきページ番号
+  int16_t page3d_view;                  // 現在表示すべきページ番号
+
   // バッファ
   uint8_t hi_score_mes[ 32 ];           // ハイスコア表示用
   uint8_t score_mes[ 32 ];              // スコア表示用
@@ -84,5 +94,14 @@ typedef struct {
   uint8_t lap_count_mes[ 32 ];          // ラップカウント表示用
 
 } VSYNC_EVENT;
+
+#define RAYCAST_DATA_FILE "RAY128.LUT"
+
+typedef struct {
+  int32_t start_rel_x;    // 画面左端のサンプリング開始相対座標（X成分）
+  int32_t start_rel_y;    // 画面左端のサンプリング開始相対座標（Y成分）
+  int32_t step_x;         // 画面横方向のサンプリング歩幅（X成分） / 横増分ベクトル（X）
+  int32_t step_y;         // 画面横方向のサンプリング歩幅（Y成分） / 横増分ベクトル（Y）
+} RASTER_LINE_DATA;
 
 #endif
