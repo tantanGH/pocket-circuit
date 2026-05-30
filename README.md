@@ -77,6 +77,18 @@ ADPCM/FM音源とも使っておらず無音なので、お好きなドライブ
 
 ---
 
+## おまけ (MUTE LAND)
+
+Pocket Circuit と同じゲームルール・物理エンジン・描画エンジンを使った別マップです。3D専用のため、マップの広さが6倍ほど広くなっており、最高速も少し上げてあります。道幅も広いためドリフトで楽しむというよりはトワイライト未来都市の雰囲気を楽しんでみてください。
+
+<img src='muteland1.jpg' width='600px'/>
+
+<img src='muteland2.jpg' width='600px'/>
+
+ダウンロードは [こちら](https://github.com/tantanGH/pocket-circuit/raw/refs/heads/main/MUTEL020.ZIP)から。
+
+---
+
 ## 開発環境
 
  - efl2x68k (Thanks to Yunkさん)
