@@ -90,7 +90,7 @@ $(INTERMEDIATE_DIR_060)/%.o : %.c Makefile $(HEADER_SRCS)
 
 # 配布用パッケージ作成
 package:
-	zip -j ${PACKAGE_FILE} \
+	python3 make-safe-zip.py -j ${PACKAGE_FILE} \
 			${DOCUMENT_FILE} \
 			${ASSET_FILES} \
 			${INTERMEDIATE_DIR_000}/${TARGET_FILE_000} \
