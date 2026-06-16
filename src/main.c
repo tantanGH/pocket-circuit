@@ -8,7 +8,6 @@
 #include <x68k/iocs.h>
 
 #include <ajoy.h>
-#include <himem.h>
 
 #include "pocketct.h"
 #include "sincos.h"
@@ -17,7 +16,6 @@
 #include "gpalette.h"
 #include "pcg_car.h"
 #include "pcg_smoke.h"
-#include "pcg_sky.h"
 
 // 自機
 static volatile PLAYER_CAR car = { 0 };
@@ -62,11 +60,6 @@ static void init_player_car(volatile PLAYER_CAR *car, int16_t start_x, int16_t s
   if (car->cam_y < CAM_Y_MIN) car->cam_y = CAM_Y_MIN;
   if (car->cam_y > CAM_Y_MAX) car->cam_y = CAM_Y_MAX;
   
-  // 3D描画用
-  car->cam_height = 32;
-  car->focal_length = 128;
-  car->horizon_y = 96;
-
   // スプライト位置初期化
   car->sp_x = 128;    // 256x256 画面の中央絶対座標だけどスプライト特有のオフセットは考慮せず
   car->sp_y = 128;
@@ -91,7 +84,7 @@ static void init_player_car(volatile PLAYER_CAR *car, int16_t start_x, int16_t s
 //
 //  VSYNCイベント初期化
 //
-static void init_vsync_event(volatile VSYNC_EVENT* vsync_event, int16_t view3d) {
+static void init_vsync_event(volatile VSYNC_EVENT* vsync_event) {
 
   // カウンタ初期化
   vsync_event->vsync_counter = 0;
@@ -108,11 +101,6 @@ static void init_vsync_event(volatile VSYNC_EVENT* vsync_event, int16_t view3d) 
   vsync_event->event_refresh_lap_mes = 0;
   vsync_event->event_refresh_wrong_way = 0;
   vsync_event->event_refresh_goal = 0;
-
-  // 3D描画用パラメータ初期化
-  vsync_event->view3d = view3d;
-  vsync_event->page3d_calc = 0;
-  vsync_event->page3d_view = 1;
 
   // 表示メッセージ用バッファ初期化
   vsync_event->hi_score_mes[0] = '\0';
@@ -239,95 +227,81 @@ static void reset_timer_a() {
 //
 static void __attribute__((interrupt)) refresh_screen() {
 
-  if (vsync_event.view3d) {
+  // グラフィック座標（car.sp_x）を、スプライト座標（+16）へ変換し、
+  // さらに32x32スプライトの左上基準（-16）を引く
+  int16_t sp_base_x = car.sp_x; 
+  int16_t sp_base_y = car.sp_y;
+  
+  // 32段階回転のどのパターンを使うか
+  // 1方向ごとに4パターン使う
+  uint16_t angle_32 = (car.angle >> 8) & 31;
+  uint16_t pattern_base = 0x100 + 4 + (angle_32 << 2);    // 内部的に256倍精度なのを32段階に戻してから4倍
 
-    // 3Dモード時はスクロール位置によるページ切り替え
-    GR0_SCRL[1] = 256 * vsync_event.page3d_view;
+  // 自車の表示 (スプライト0-4)
+  SP_SCRL[  0 ] = sp_base_x;
+  SP_SCRL[  1 ] = sp_base_y;
+  SP_SCRL[  2 ] = pattern_base + 0;
+  SP_SCRL[  3 ] = 3;
 
-    // ページフリップ
-    vsync_event.page3d_view = 1 - vsync_event.page3d_view;
+  SP_SCRL[  4 ] = sp_base_x + 16;
+  SP_SCRL[  5 ] = sp_base_y;
+  SP_SCRL[  6 ] = pattern_base + 1;
+  SP_SCRL[  7 ] = 3;
 
+  SP_SCRL[  8 ] = sp_base_x;
+  SP_SCRL[  9 ] = sp_base_y + 16;
+  SP_SCRL[ 10 ] = pattern_base + 2;
+  SP_SCRL[ 11 ] = 3;
+
+  SP_SCRL[ 12 ] = sp_base_x + 16;
+  SP_SCRL[ 13 ] = sp_base_y + 16;
+  SP_SCRL[ 14 ] = pattern_base + 3;
+  SP_SCRL[ 15 ] = 3;
+
+
+  // ドリフト中のタイヤスモーク
+  if (car.is_drifting) {
+    uint16_t smoke_pattern = 0x200 + 132 + ((vsync_event.vsync_counter >> 2) & 3);
+    SP_SCRL[ 16 ] = sp_base_x + smoke_rear_left_x[angle_32];
+    SP_SCRL[ 17 ] = sp_base_y + smoke_rear_left_y[angle_32];
+    SP_SCRL[ 18 ] = smoke_pattern;
+    SP_SCRL[ 19 ] = 3;
+
+    SP_SCRL[ 20 ] = sp_base_x + smoke_rear_right_x[angle_32];
+    SP_SCRL[ 21 ] = sp_base_y + smoke_rear_right_y[angle_32];
+    SP_SCRL[ 22 ] = smoke_pattern;
+    SP_SCRL[ 23 ] = 3;
+
+    SP_SCRL[ 24 ] = sp_base_x + smoke_front_left_x[angle_32];
+    SP_SCRL[ 25 ] = sp_base_y + smoke_front_left_y[angle_32];
+    SP_SCRL[ 26 ] = smoke_pattern;
+    SP_SCRL[ 27 ] = 3;
+
+    SP_SCRL[ 28 ] = sp_base_x + smoke_front_right_x[angle_32];
+    SP_SCRL[ 29 ] = sp_base_y + smoke_front_right_y[angle_32];
+    SP_SCRL[ 30 ] = smoke_pattern;
+    SP_SCRL[ 31 ] = 3;    
   } else {
+    // ドリフトしていないときは消す
+    SP_SCRL[ 19 ] = 0;
+    SP_SCRL[ 23 ] = 0;
+    SP_SCRL[ 27 ] = 0;
+    SP_SCRL[ 31 ] = 0;
+  }  
 
-    // 2Dモード時は自車スプライトの表示
+  // グラフィック画面のスクロール
 
-    // グラフィック座標（car.sp_x）を、スプライト座標（+16）へ変換し、
-    // さらに32x32スプライトの左上基準（-16）を引く
-    int16_t sp_base_x = car.sp_x; 
-    int16_t sp_base_y = car.sp_y;
-    
-    // 32段階回転のどのパターンを使うか
-    // 1方向ごとに4パターン使う
-    uint16_t angle_32 = (car.angle >> 8) & 31;
-    uint16_t pattern_base = 0x100 + 4 + (angle_32 << 2);    // 内部的に256倍精度なのを32段階に戻してから4倍
+  // 物理的な「画面左上端」を求める（中心cam_x - 画面物理幅の半分181）
+  int16_t screen_left = car.cam_x - CAM_X_MIN;
+  int16_t screen_top  = car.cam_y - CAM_Y_MIN;
 
-    // 自車の表示 (スプライト0-4)
-    SP_SCRL[  0 ] = sp_base_x;
-    SP_SCRL[  1 ] = sp_base_y;
-    SP_SCRL[  2 ] = pattern_base + 0;
-    SP_SCRL[  3 ] = 3;
+  // ハードウェアの解像度（1024x1024）へ投影（リニア変換）
+  int16_t gvram_scrl_x = ((int32_t)screen_left * DISP_W) / PHYS_W;
+  int16_t gvram_scrl_y = screen_top; // 縦は1:1なのでそのまま
 
-    SP_SCRL[  4 ] = sp_base_x + 16;
-    SP_SCRL[  5 ] = sp_base_y;
-    SP_SCRL[  6 ] = pattern_base + 1;
-    SP_SCRL[  7 ] = 3;
-
-    SP_SCRL[  8 ] = sp_base_x;
-    SP_SCRL[  9 ] = sp_base_y + 16;
-    SP_SCRL[ 10 ] = pattern_base + 2;
-    SP_SCRL[ 11 ] = 3;
-
-    SP_SCRL[ 12 ] = sp_base_x + 16;
-    SP_SCRL[ 13 ] = sp_base_y + 16;
-    SP_SCRL[ 14 ] = pattern_base + 3;
-    SP_SCRL[ 15 ] = 3;
-
-
-    // ドリフト中のタイヤスモーク
-    if (car.is_drifting) {
-      uint16_t smoke_pattern = 0x200 + 132 + ((vsync_event.vsync_counter >> 2) & 3);
-      SP_SCRL[ 16 ] = sp_base_x + smoke_rear_left_x[angle_32];
-      SP_SCRL[ 17 ] = sp_base_y + smoke_rear_left_y[angle_32];
-      SP_SCRL[ 18 ] = smoke_pattern;
-      SP_SCRL[ 19 ] = 3;
-
-      SP_SCRL[ 20 ] = sp_base_x + smoke_rear_right_x[angle_32];
-      SP_SCRL[ 21 ] = sp_base_y + smoke_rear_right_y[angle_32];
-      SP_SCRL[ 22 ] = smoke_pattern;
-      SP_SCRL[ 23 ] = 3;
-
-      SP_SCRL[ 24 ] = sp_base_x + smoke_front_left_x[angle_32];
-      SP_SCRL[ 25 ] = sp_base_y + smoke_front_left_y[angle_32];
-      SP_SCRL[ 26 ] = smoke_pattern;
-      SP_SCRL[ 27 ] = 3;
-
-      SP_SCRL[ 28 ] = sp_base_x + smoke_front_right_x[angle_32];
-      SP_SCRL[ 29 ] = sp_base_y + smoke_front_right_y[angle_32];
-      SP_SCRL[ 30 ] = smoke_pattern;
-      SP_SCRL[ 31 ] = 3;    
-    } else {
-      // ドリフトしていないときは消す
-      SP_SCRL[ 19 ] = 0;
-      SP_SCRL[ 23 ] = 0;
-      SP_SCRL[ 27 ] = 0;
-      SP_SCRL[ 31 ] = 0;
-    }  
-
-    // グラフィック画面のスクロール(2Dモード)
-
-    // 物理的な「画面左上端」を求める（中心cam_x - 画面物理幅の半分181）
-    int16_t screen_left = car.cam_x - CAM_X_MIN;
-    int16_t screen_top  = car.cam_y - CAM_Y_MIN;
-
-    // ハードウェアの解像度（1024x1024）へ投影（リニア変換）
-    int16_t gvram_scrl_x = ((int32_t)screen_left * DISP_W) / PHYS_W;
-    int16_t gvram_scrl_y = screen_top; // 縦は1:1なのでそのまま
-
-    // レジスタへ反映
-    GR0_SCRL[0] = gvram_scrl_x & 1023;
-    GR0_SCRL[1] = gvram_scrl_y & 1023;
-
-  }
+  // レジスタへ反映
+  GR0_SCRL[0] = gvram_scrl_x & 1023;
+  GR0_SCRL[1] = gvram_scrl_y & 1023;
 
   // ハイスコア表示更新イベント
   if (vsync_event.event_refresh_hi_score) {
@@ -363,22 +337,14 @@ static void __attribute__((interrupt)) refresh_screen() {
 
   // コース外れ警告表示イベント
   if (vsync_event.event_refresh_wrong_way) {
-    if (vsync_event.view3d) {
-      put_text_8x8(96,48,2,1,"WRONG WAY");      // 3Dモード時は空と被って見づらいので黄色
-    } else {
-      put_text_8x8(96,48,1,1,"WRONG WAY");      // 2Dモード時は水色
-    }
+    put_text_8x8(96,48,1,1,"WRONG WAY");
     vsync_event.event_refresh_wrong_way = 0;
   }
 
   // コース外れ警告消去カウントダウン
   if (vsync_event.wrong_way_counter > 0) {
     if (vsync_event.wrong_way_counter == 1) {
-      if (vsync_event.view3d) {
-        put_text_8x8(96,48,2,1,"         ");
-      } else {
-        put_text_8x8(96,48,1,1,"         ");        
-      }
+      put_text_8x8(96,48,1,1,"         ");        
     }
     vsync_event.wrong_way_counter--;
   }
@@ -447,9 +413,9 @@ static void init_sp_pcg() {
   }
   
   // PCGパターン(空) 16x16が1つ
-  for (int16_t i = 0; i < 1; i++) {
-    memcpy((void*)&PCG[i * 64], (void*)(&sp_sky_pattern_data[i * 64]), 128);
-  }
+  //for (int16_t i = 0; i < 1; i++) {
+  //  memcpy((void*)&PCG[i * 64], (void*)(&sp_sky_pattern_data[i * 64]), 128);
+  //}
   
   // PCGパターン(車体) 16x16が4つ * 32方向で128個使う
   for (int16_t i = 0; i < 128; i++) {
@@ -465,7 +431,6 @@ static void init_sp_pcg() {
   for (int16_t i = 0; i < 16; i++) {
     PAL_BLK1[i] = sp_palette_data[i];
     PAL_BLK2[i] = sp_smoke_palette_data[i];
-    PAL_BLK3[i] = sp_sky_palette_data[i];
   }
 
   *BG_CTRL = 0x202;   // SP/BG ON, BG1-BGTEXT0, BG0-BGTEXT1, BG1 OFF, BG0 OFF
@@ -580,7 +545,7 @@ static void deploy_graphics(const uint8_t* packed_grp) {
 //
 //  描画モードの選択
 //
-static int16_t select_view_mode(int16_t use_analog_controller, int16_t use_high_memory) {
+static int16_t select_view_mode(int16_t use_analog_controller) {
 
   int16_t view3d = 0;
 
@@ -597,71 +562,6 @@ static int16_t select_view_mode(int16_t use_analog_controller, int16_t use_high_
   }
   usleep(200000);    
 
-  if (use_high_memory) {
-    put_text_8x8(0,64,3,1," - HIMEM.SYS WAS FOUND.");
-    put_text_8x8(0,88,1,1,"SELECT VIEW MODE:");
-
-    // 入力待ち
-    int16_t flip = 1;
-    int16_t pushed = 0;
-    for (;;) {
-      if (_iocs_b_keysns() != 0) {
-        int16_t scan_code = _iocs_b_keyinp() >> 8;
-        if (scan_code == KEY_SCAN_CODE_LEFT || scan_code == KEY_SCAN_CODE_RIGHT) {
-          if (!pushed) flip = 1;
-        } else if (scan_code == KEY_SCAN_CODE_UP || scan_code == KEY_SCAN_CODE_DOWN) {
-          if (!pushed) flip = 1;
-        } else if (scan_code == KEY_SCAN_CODE_CR || scan_code == KEY_SCAN_CODE_ENTER || scan_code == KEY_SCAN_CODE_SPACE) {
-          break;
-        } else if (scan_code == KEY_SCAN_CODE_9) {
-          view3d = 2;   // 非インターレース隠しコマンド
-          break;
-        } else if (scan_code == KEY_SCAN_CODE_ESC) {
-          return -1;
-        } else {
-          pushed = 0;
-        }
-      }
-      if (use_analog_controller) {
-        ajoy_read(ajoy_buffer);
-        if (ajoy_buffer[0] < 100 || ajoy_buffer[0] > 156) {
-          if (!pushed) flip = 1;
-        } else if (ajoy_buffer[1] < 100 || ajoy_buffer[1] > 156) {
-          if (!pushed) flip = 1;
-        } else if (ajoy_buffer[2] < 100 || ajoy_buffer[2] > 156) {
-          if (!pushed) flip = 1;
-        } else if ((ajoy_buffer[4] & 0xfff) != 0x0fff) {
-          break;
-        } else {
-          pushed = 0;
-        }
-      } else {
-        uint8_t j = _iocs_joyget(0);
-        if ((j & 0x0f) != 0x0f) {
-          if (!pushed) flip = 1;
-        } else if ((j & 0x60) != 0x60) {
-          break;
-        } else {
-          pushed = 0;
-        }
-      }
-      if (flip) {
-        view3d = 1 - view3d;
-        if (view3d) {
-          put_text_8x8(8*18,88,2,1,"3D VIEW");
-        } else {
-          put_text_8x8(8*18,88,2,1,"2D VIEW");
-        }
-        flip = 0;
-        pushed = 1;
-      }
-    }
-
-  } else {
-    put_text_8x8(0,64,3,1," - HIMEM.SYS WAS NOT FOUND.");
-    put_text_8x8(0,80,3,1," - USE 2D VIEW MODE.");
-  }
-
   return view3d;
 }
 
@@ -677,16 +577,13 @@ static void init_text_labels() {
 //
 //  ゲームオーバー待機画面(リザルト表示)
 //
-static int16_t wait_game_over(int16_t use_analog_controller, int16_t view3d) {
+static int16_t wait_game_over(int16_t use_analog_controller) {
 
   // グラフィックOFF
   graphic_off();
 
   // テキスト画面クリア
   _dos_c_cls_al();
-
-  // BG画面オフ
-  if (view3d) bg_off();
 
   // リザルト表示
   put_text_8x8(80,8,2,1,"- RESULT - ");
@@ -786,14 +683,8 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   // VSYNC割り込み使用開始したよフラグ
   int16_t vsync = 0;
 
-  // 3D表示するか
-  int16_t view3d = 0;
-
   // エラーメッセージ初期化
   error_mes[0] = '\0';
-
-  // ハイメモリが使えるか
-  int16_t use_high_memory = himem_isavailable();
 
   // AJOY.X常駐チェック
   int16_t use_analog_controller = ajoy_isavailable();
@@ -842,12 +733,8 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   // 描画データへのポインタ
   uint8_t* grp_data = NULL;
 
-  // 3Dレイキャストデータへのポインタ
-  RASTER_LINE_DATA* raycast_lut = NULL;
-
-  // 描画モードの選択
-  view3d = select_view_mode(use_analog_controller, use_high_memory);
-  if (view3d < 0) goto exit;
+  // 情報表示
+  select_view_mode(use_analog_controller);
 
   // コースデータの読み込み
   put_text_8x8(0,112,3,1,"LOADING COURSE DATA ...");
@@ -860,64 +747,25 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
     strcpy(error_mes, "コースデータ(.DAT)の読み込みに失敗しました。");
     goto exit;
   }
-  
-  if (!view3d) {
 
-    physical_map = course_data + 32;    // 専用32バイトはヘッダ それ以降に物理マップデータ
+  physical_map = course_data + 32;    // 専用32バイトはヘッダ それ以降に物理マップデータ
 
-    // コースグラフィックデータのロード
-    grp_data = malloc(DISP_H * (DISP_W / 2));
-    if (grp_data == NULL) {
-      strcpy(error_mes, "メインメモリが不足しています。");
-      goto exit;
-    }
-    if (load_file(COURSE_DISP_DATA_FILE, grp_data, DISP_H * (DISP_W / 2)) != 0) {
-      strcpy(error_mes, "コースグラフィックデータ(.GRP)の読み込みに失敗しました。");
-      goto exit;
-    }
-      
-    // コースグラフィックデータをGVRAMに展開
-    graphic_off();
-    deploy_graphics(grp_data);
-    free(grp_data); // 表示用の一時バッファは用済みなので解放
-    grp_data = NULL;
-
-  } else {
-
-    // レイキャスト用ルックアップテーブルをメインメモリに読み込み
-    size_t raycast_lut_size = 512 * 128 * sizeof(RASTER_LINE_DATA);
-    grp_data = malloc(raycast_lut_size);
-    if (grp_data == NULL) {
-      strcpy(error_mes,"メインメモリが不足しています。");
-      goto exit;
-    }
-    if (load_file(RAYCAST_DATA_FILE, grp_data, raycast_lut_size) != 0) {
-      strcpy(error_mes,RAYCAST_DATA_FILE"ファイルの読み込みに失敗しました。");
-      goto exit;
-    }
-
-    // レイキャスト用ルックアップテーブルをハイメモリにコピー
-    raycast_lut = himem_malloc(raycast_lut_size);
-    if (raycast_lut == NULL) {
-      strcpy(error_mes,"ハイメモリが不足しています。");
-      goto exit;    
-    }
-    memcpy((void*)raycast_lut, grp_data, raycast_lut_size);
-    free(grp_data);
-    grp_data = NULL;
-
-    // 物理マップを2048境界にパディングしながらハイメモリに展開
-    physical_map = himem_malloc(PHYS_W * PHYS_H * sizeof(uint8_t));
-    if (physical_map == NULL) {
-      strcpy(error_mes, "ハイメモリが不足しています。");
-      goto exit;
-    }
-    for (int16_t i = 0; i < 1024; i++) {
-      memcpy(physical_map + 2048 * i, course_data + 32 + 1440 * i, 1440);
-      memset(physical_map + 2048 * i + 1440, 1, 2048 - 1440);
-    }
-
+  // コースグラフィックデータのロード
+  grp_data = malloc(DISP_H * (DISP_W / 2));
+  if (grp_data == NULL) {
+    strcpy(error_mes, "メインメモリが不足しています。");
+    goto exit;
   }
+  if (load_file(COURSE_DISP_DATA_FILE, grp_data, DISP_H * (DISP_W / 2)) != 0) {
+    strcpy(error_mes, "コースグラフィックデータ(.GRP)の読み込みに失敗しました。");
+    goto exit;
+  }
+    
+  // コースグラフィックデータをGVRAMに展開
+  graphic_off();
+  deploy_graphics(grp_data);
+  free(grp_data); // 表示用の一時バッファは用済みなので解放
+  grp_data = NULL;
 
   // ゲームループ
 game_start:
@@ -928,14 +776,8 @@ game_start:
   // グラフィックON
   graphic_on();
 
-  // BG ON (3D時のみ)
-  if (view3d) {
-    init_bg_sky();
-    bg_on();
-  }
-
   // VSYNCイベントステータス初期化
-  init_vsync_event(&vsync_event, view3d);
+  init_vsync_event(&vsync_event);
 
   // ドリフトポイント初期化
   uint16_t drift_combo = 0;           // 現在の連続ドリフトフレーム数（コンボ）
@@ -988,18 +830,10 @@ game_start:
   
     // 既にゴール済みなら車体を強制移動
     if (car.is_goal) {
-      if (view3d) {
-        car.x += 6 << 4;
-        if (car.x > (s_x + 500)<<4) {
-          // (3D) スタート位置より500座標移動したら終了
-          game_over = 1;
-        }
-      } else {
-        car.sp_x += 4;
-        if (car.sp_x > 256 + 32) {
-          // (2D) SPが画面外に出たらゲーム終了、リザルト確認へ
-          game_over = 1;
-        }
+      car.sp_x += 4;
+      if (car.sp_x > 256 + 32) {
+        // SPが画面外に出たらゲーム終了、リザルト確認へ
+        game_over = 1;
       }
       goto skip_physics;  // このフレームでは物理を動かさない
     }
@@ -1009,7 +843,7 @@ game_start:
     // ----------------------------------------------------------------
     int16_t map_x = car.x >> 4;
     int16_t map_y = car.y >> 4;
-    uint32_t map_index = view3d ? (map_y << 11) + map_x : ((uint32_t)map_y * 1440) + map_x; // 3Dモード時は2048にパディング済み
+    uint32_t map_index = ((uint32_t)map_y * 1440) + map_x;
     uint8_t surface_attr = physical_map[map_index] & 7;
 
     int16_t speed_limit = MAX_SPEED << 8; // デフォルトの道路上での最高速度
@@ -1326,70 +1160,6 @@ game_start:
 
 skip_physics:
 
-    // ----------------------------------------------------------------
-    // 9. 3Dレイキャスト処理 (3Dモード時のみ)
-    // ----------------------------------------------------------------
-    if (view3d) {
-
-      // 追い越しガード(あえてやらない)
-      //while (vsync_event.page3d_calc == vsync_event.page3d_view) {
-      //}
-
-      // 今回の書き込むページのGVRAMへのポインタ
-      uint16_t* line_ptr = (uint16_t*)(GVRAM + vsync_event.page3d_calc * 1024 * 256 + 1024 * 128);
-        
-      // 角度の分解能を8192方向から512方向にする
-      uint16_t angle_512 = (car.angle >> 4) & 511;
-
-      // カメラ位置を一時的に256倍精度にする
-      int32_t cam_x_256 = car.x << 4;
-      int32_t cam_y_256 = car.y << 4;
-
-      // LUTの1角度あたりのサイズは128ライン固定なので、オフセットは常に << 7
-      const RASTER_LINE_DATA* angle_lut_base = raycast_lut + (angle_512 << 7);
-
-      // インターレース
-      int16_t line_step  = 2;
-      int16_t loop_count = 64;
-      if (view3d == 2) {
-        // 非インターレース
-        line_step = 1;
-        loop_count = 128;
-      }
-
-      // 縦方向のループ
-      for (int16_t i = 0; i < loop_count; i++) {
-            
-        // インターレース時は間引く
-        int16_t line_idx = i * line_step;
-        const RASTER_LINE_DATA* lut = angle_lut_base + line_idx;
-
-        // 256倍精度同士の加算
-        int32_t curr_x_256 = cam_x_256 + lut->start_rel_x;
-        int32_t curr_y_256 = cam_y_256 + lut->start_rel_y;
-        int32_t step_x_256 = lut->step_x;
-        int32_t step_y_256 = lut->step_y;
-
-        // 内側の横ループ（256回）
-        for (int16_t screen_x = 0; screen_x < 256; screen_x++) {
-                
-          int32_t map_x = curr_x_256 >> 8;
-          int32_t map_y = curr_y_256 >> 8;
-
-          curr_x_256 += step_x_256;
-          curr_y_256 += step_y_256;
-
-          // 2048x1024のビットマスク＆シフト
-          *line_ptr++ = physical_map[((map_y & 1023) << 11) + (map_x & 2047)];
-        }
-
-        line_ptr += line_step * 1024 - 256;
-      }
-
-      // ページフリップ
-      vsync_event.page3d_calc = 1 - vsync_event.page3d_calc;
-    }
-
     // 物理計算の画面描画追い越しガード
     while (vsync_event.vsync_counter == current_vsync) {
     }
@@ -1404,7 +1174,7 @@ skip_physics:
 
   // リザルト表示待機画面
   if (game_over) {
-    if (wait_game_over(use_analog_controller, view3d) != 0) {
+    if (wait_game_over(use_analog_controller) != 0) {
       rc = 0;
       goto exit;
     }
@@ -1424,19 +1194,9 @@ exit:
     vsync = 0;
   }
 
-  // レイキャストLUTバッファ開放
-  if (raycast_lut != NULL) {
-    himem_free(raycast_lut);
-    raycast_lut = NULL;
-  }
-
   // 物理マップ用バッファ開放
   if (course_data != NULL) {
-    if (view3d) {
-      himem_free(course_data);
-    } else {
-      free(course_data);
-    }
+    free(course_data);
     course_data = NULL;
   }
 
