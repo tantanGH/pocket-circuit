@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define VERSION "0.5.0 (2026/09/27)"
+#define VERSION "0.5.0 (2026/10/30)"
 
 // コースデータファイル名
 #define COURSE_PHYS_DATA_FILE  "COURSE1.DAT"

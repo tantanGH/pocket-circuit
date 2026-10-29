@@ -792,7 +792,7 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
     strcpy(error_mes, "コースグラフィックデータ(.GRP)の読み込みに失敗しました。");
     goto exit;
   }
-    
+
   // コースグラフィックデータをGVRAMに展開
   graphic_off();
   deploy_graphics(grp_data);
