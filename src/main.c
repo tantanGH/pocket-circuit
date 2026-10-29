@@ -8,6 +8,7 @@
 #include <x68k/iocs.h>
 
 #include <ajoy.h>
+#include <zmusic2.h>
 
 #include "pocketct.h"
 #include "sincos.h"
@@ -475,6 +476,25 @@ static void init_t_palette() {
 }
 
 //
+//  ファイルサイズの取得
+//
+static int32_t get_file_size(const char* filename) {
+  
+  int32_t size = -1;
+  
+  FILE* fp = fopen(filename, "rb");
+  if (fp == NULL) {
+    return size;
+  }
+
+  fseek(fp, 0, SEEK_END);
+  size = ftell(fp);
+  fclose(fp);
+
+  return size;
+}
+
+//
 //  ファイルをメモリに丸ごとロード
 //
 static int32_t load_file(const char* filename, uint8_t* buf, uint32_t size) {
@@ -547,22 +567,24 @@ static void deploy_graphics(const uint8_t* packed_grp) {
 //
 static int16_t select_view_mode(int16_t use_analog_controller) {
 
-  int16_t view3d = 0;
-
   put_text_8x8(0,0,1,1,"POCKET CIRCUIT PRO-68K");
   put_text_8x8(0,16,1,1,"VERSION "VERSION);
   usleep(200000);
 
+  if (zmusic_isavailable()) {
+    put_text_8x8(0,32,3,1," - ZMUSIC.X WAS FOUND.");
+  }
+  
   if (use_analog_controller) {
-    put_text_8x8(0,32,3,1," - AJOY.X WAS FOUND.");
-    put_text_8x8(0,48,3,1," - USE AN ANALOG CONTROLLER.");
+    put_text_8x8(0,48,3,1," - AJOY.X WAS FOUND.");
+    put_text_8x8(0,64,3,1," - USE ANALOG CONTROLLER MODE.");
   } else {
-    put_text_8x8(0,32,3,1," - AJOY.X WAS NOT FOUND.");
-    put_text_8x8(0,48,3,1," - USE A DIGITAL CONTROLLER.");
+    put_text_8x8(0,48,3,1," - AJOY.X WAS NOT FOUND.");
+    put_text_8x8(0,64,3,1," - USE DIGITAL CONTROLLER MODE.");
   }
   usleep(200000);    
 
-  return view3d;
+  return 0;
 }
 
 //
@@ -733,6 +755,16 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   // 描画データへのポインタ
   uint8_t* grp_data = NULL;
 
+  // BGMデータへのポインタ
+  uint8_t* bgm_bufs[4] = { NULL };
+  uint32_t bgm_bufs_len[4] = { 0 };
+
+  // ZMUSICが使えるか
+  if (!zmusic_isavailable()) {
+    strcpy(error_mes, "ZMUSICが組み込まれていません。");
+    goto exit;
+  }
+
   // 情報表示
   select_view_mode(use_analog_controller);
 
@@ -766,6 +798,23 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   deploy_graphics(grp_data);
   free(grp_data); // 表示用の一時バッファは用済みなので解放
   grp_data = NULL;
+
+  // ZMUSIC初期化
+  zmusic_m_init();
+
+  // BGMデータの読み込み
+  for (int16_t i = 0; i < 4; i++) {
+    const char* bgm_data_file = (i == 0) ? BGM1_DATA_FILE :
+                                (i == 1) ? BGM2_DATA_FILE :
+                                (i == 2) ? BGM3_DATA_FILE : BGM4_DATA_FILE;
+    bgm_bufs_len[i] = get_file_size(bgm_data_file);
+    if (bgm_bufs_len[i] <= 0) {
+      strcpy(error_mes, "BGMデータファイル(.ZMD)の読み込みに失敗しました。");
+      goto exit;
+    }
+    bgm_bufs[i] = malloc(bgm_bufs_len[i]);
+    load_file(bgm_data_file, bgm_bufs[i], bgm_bufs_len[i]);
+  }
 
   // ゲームループ
 game_start:
@@ -813,6 +862,10 @@ game_start:
 
   // タイマーAリセット(これをしないとハードリセット直後のVSYNC割り込みが正常にスタートしない)
   reset_timer_a();
+
+  // BGM開始(ランダム)
+  int32_t bgm_id = rand() % 4;
+  zmusic_play_cnv_data(bgm_bufs[bgm_id], bgm_bufs_len[bgm_id]);
 
   // ゲームメインループ
   while (!game_over) {
@@ -1125,6 +1178,9 @@ game_start:
                 }
               }
 
+              // BGM フェードアウト
+              zmusic_fade_out(20);
+
             } else {
               // 2, 3, 4, 5周目の通過
               car.lap_times[car.lap_count++] = vsync_event.vsync_counter;
@@ -1192,6 +1248,19 @@ exit:
   if (vsync > 0) {
     _iocs_vdispst(0, 0, 0);
     vsync = 0;
+  }
+
+  // ZMUSIC停止
+  if (zmusic_isavailable()) {
+    zmusic_m_stop();
+  }
+
+  // BGMデータバッファ開放
+  for (int16_t i = 0; i < 4; i++) {
+    if (bgm_bufs[i] != NULL) {
+      free(bgm_bufs[i]);
+      bgm_bufs[i] = NULL;
+    }
   }
 
   // 物理マップ用バッファ開放
