@@ -7,7 +7,7 @@ endif
 .SUFFIXES:
 
 # バージョン
-VERSION = 040
+VERSION = 050
 
 # 実行ファイル名
 TARGET_FILE_000 = POCKETCT.X
@@ -16,7 +16,7 @@ TARGET_FILE_000 = POCKETCT.X
 DOCUMENT_FILE = POCKETCT.TXT
 
 # アセットファイル名
-ASSET_FILES = COURSE1.DAT COURSE1.GRP
+ASSET_FILES = COURSE1.DAT COURSE1.GRP BGM1.ZMD BGM2.ZMD BGM3.ZMD BGM4.ZMD
 
 # 配布パッケージファイル名 
 PACKAGE_FILE = ../PCTCT$(VERSION).ZIP
@@ -28,10 +28,11 @@ AS = m68k-xelf-as
 # ヘッダ検索パス
 INCLUDE_FLAGS = -I${ELF2X68K_DIR}/lib/gcc/m68k-elf/13.4.0/include \
 				-I${ELF2X68K_DIR}/m68k-elf/include \
-				-I../libs/libajoy/include
+				-I../libs/libajoy/include \
+				-I../libs/libzmusic2/include
 
 # リンカオプションとライブラリ検索パス
-LDFLAGS =  -Wl,-s -Wl,--gc-sections -L../libs/libajoy/lib
+LDFLAGS =  -Wl,-s -Wl,--gc-sections -L../libs/libajoy/lib -L../libs/libzmusic2/lib
 
 # *.c ソースファイル
 C_SRCS = main.c
@@ -43,7 +44,7 @@ ASM_SRCS =
 HEADER_SRCS = keyboard.h crtc.h pcg_car.h pcg_smoke.h gpalette.h sincos.h pocketct.h
 
 # リンク対象のライブラリファイル
-LIBS = -lajoy
+LIBS = -lajoy -lzmusic2
 
 # 中間ファイル生成用ディレクトリ
 INTERMEDIATE_DIR_000 = _build000

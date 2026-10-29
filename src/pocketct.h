@@ -3,11 +3,17 @@
 
 #include <stdint.h>
 
-#define VERSION "0.4.0 (2026/06/16)"
+#define VERSION "0.5.0 (2026/09/27)"
 
 // コースデータファイル名
 #define COURSE_PHYS_DATA_FILE  "COURSE1.DAT"
 #define COURSE_DISP_DATA_FILE  "COURSE1.GRP"
+
+// BGMデータファイル名
+#define BGM1_DATA_FILE "BGM1.ZMD"
+#define BGM2_DATA_FILE "BGM2.ZMD"
+#define BGM3_DATA_FILE "BGM3.ZMD"
+#define BGM4_DATA_FILE "BGM4.ZMD"
 
 // デフォルトハイスコア
 #define DEFAULT_HI_SCORE (76500)

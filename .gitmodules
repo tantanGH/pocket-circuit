@@ -1,6 +1,6 @@
 [submodule "libs/libajoy"]
 	path = libs/libajoy
 	url = https://github.com/tantanGH/libajoy.git
-[submodule "libs/libhimem"]
-	path = libs/libhimem
-	url = https://github.com/tantanGH/libhimem.git
+[submodule "libs/libzmusic2"]
+	path = libs/libzmusic2
+	url = https://github.com/tantanGH/libzmusic2.git
